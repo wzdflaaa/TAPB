@@ -42,7 +42,7 @@ def main(stage, best_epoch=0):
 
     mol_path = 'models/drug/molformer'
     if stage == 1:
-        MLM = True
+        MLM = True 
         model = TransformerDTI(model_configs=model_configs).to(device)
 
     else:
