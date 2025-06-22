@@ -3,7 +3,7 @@ import numpy as np
 import os
 import pickle
 import pandas as pd
-from tqdm import tqdm
+from tqdm import tqdm 
 from time import time
 from sklearn.cluster import KMeans
 from dataloader.dataloader import DTIDataset, get_dataLoader
