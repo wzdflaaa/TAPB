@@ -6,7 +6,7 @@ from time import time
 
 import warnings
 import pandas as pd
-import torch
+import torch 
 from omegaconf import OmegaConf
 from dataloader.dataloader import DTIDataset, get_dataLoader
 from models.transformer_dti import TransformerDTI
