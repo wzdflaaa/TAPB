@@ -12,7 +12,7 @@ from torch.nn.functional import binary_cross_entropy_with_logits as bce_loss
 from prettytable import PrettyTable
 from tqdm import tqdm
 
-
+ 
 class Trainer(object):
     def __init__(self, model, optim, device, stage, train_dataloader, val_dataloader, test_dataloader, output_path, config):
         self.model = model
