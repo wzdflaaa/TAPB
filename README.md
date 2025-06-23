@@ -43,20 +43,14 @@ To accelerate the training process and reduce GPU memory usage, we pre-extract a
 $ python generate_pr_feature.py
 ```
 
-For the in-domain experiments, you can directly run the following command for 2 stage interventional training. `${dataset}` could either be `bindingdb`, `biosnap`.
+For the in-domain experiments, you can directly run the following command for interventional training. `${dataset}` could either be `bindingdb`, `biosnap`, `davis`, `human`.
 
 ```
 $ python main.py --data ${dataset} --split "random"
 ```
 
-For the cross-domain experiments, you can directly run the following command for 2 stage interventional training. `${dataset}` could be either `bindingdb`, `biosnap`.
+For the cross-domain experiments, you can directly run the following command for interventional training. `${dataset}` could be either `bindingdb`, `biosnap`.
 
 ```
 $ python main.py --data ${dataset} --split "cluster"
-```
-
-For the single-stage testing, you can change the settings in `main_single_stage.py` and run the following command. `${dataset}` could be either `bindingdb`, `biosnap`. `${split}` could be `random`, `cluster`. 
-
-```
-$ python main_single_stage.py --data ${dataset} --split  ${split}
 ```
