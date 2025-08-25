@@ -57,9 +57,9 @@ class TAPB(nn.Module):
 
         # classifier2 is used for TAPB ablation study
         # self.classifier2 = nn.Linear(self.d_model, 2)
-        # self.pr_linear = nn.Linear(d_esm, d_model)
 
-        # interventional traning
+        # interventional training
+        self.c = c
         self.p_ci = p_ci
         self.c_center = c.size(0)
         self.ln = nn.LayerNorm(d_esm)
@@ -72,6 +72,7 @@ class TAPB(nn.Module):
         self.linear_q = nn.Linear(d_esm, d_esm)
         self.linear_k = nn.Linear(d_esm, dim)
         self.linear_v = nn.Linear(d_esm, dim)
+        self.pr_linear = nn.Linear(d_esm, d_model)
 
     def encode_drug(self, input_drugs, freqs_cis):
         drug_id = input_drugs['input_ids']
