@@ -1,16 +1,16 @@
 TRAIN:
   BATCH_SIZE : 60
-  Stage1_MAX_EPOCH : 100
-  Stage2_MAX_EPOCH: 50
-  SEED : 5
+  MAX_EPOCH : 100
+  SEED : 6
   LR : 2e-4
   WEIGHT_DECAY : 1e-4
   MASK_PROBABILITY : 0.15
-  TARGET_RANDOM_MASK_RATIO : 0.7
-  PR_PATH : "pr_f_1280_2000.pkl"
+  TARGET_RANDOM_DROP_RATIO : 0.7
+  MUTAION: 0.2
+  C_PATH : "C_1280_2000_8.pkl"
+  PR_PATH : "pr_f_1280_20002.pkl"
   DICT_SIZE : 8
-  PR_CONFOUNDER_PATH : "pr_confoudner.pkl"
+  MLM : True
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
-  OUTPUT_DIR : "your_dir_name"
-
+  OUTPUT_DIR : "seed_"
