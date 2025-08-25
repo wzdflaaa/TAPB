@@ -4,7 +4,7 @@ This repository contains the PyTorch implementation of **TAPB**, which aims to a
 
 ## Framework👀
 
-![TAPB](image/TAPB.png)
+![TAPB](https://github.com/GaomingL1n/TAPB/blob/main/image/TAPB.png)
 
 ## System Requirements👍
 
