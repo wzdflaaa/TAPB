@@ -8,7 +8,7 @@ TRAIN:
   TARGET_RANDOM_DROP_RATIO : 0.7
   MUTAION: 0.2
   C_PATH : "C_1280_2000_8.pkl"
-  PR_PATH : "pr_f_1280_20002.pkl"
+  PR_PATH : "pr_f_1280_2000.pkl"
   DICT_SIZE : 8
   MLM : True
   SAVE_MODEL : True
