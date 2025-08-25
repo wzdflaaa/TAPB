@@ -36,7 +36,7 @@ To train TAPB, we provide the basic configurations for hyperparameters in `model
 
 To accelerate the training process and reduce GPU memory usage, we pre-extract and save the target features for each dataset using ESM-2.
 
-Molformer can be downloaded from [Molformer Hugging Face](https://huggingface.co/ibm-research/MoLFormer-XL-both-10pct/tree/main). ESM-2 can be downloaded from [ESM-2 Hugging Face].(https://huggingface.co/facebook/esm2_t33_650M_UR50D). 
+Molformer can be downloaded from [Molformer Hugging Face](https://huggingface.co/ibm-research/MoLFormer-XL-both-10pct/tree/main). ESM-2 can be downloaded from [ESM-2 Hugging Face](https://huggingface.co/facebook/esm2_t33_650M_UR50D). 
 
 🔥Or, you can download both of the Molformer weights and the ESM-2 weights from our [OneDrive](https://1drv.ms/f/c/764a5294625e5035/Emy3-AWnwdZJsvmuLQa2qzwBXwK2JPVdJRG4t0mwallyNA)
 
