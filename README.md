@@ -32,7 +32,7 @@ The `datasets` folder contains all experimental data used in TAPB: [BindingDB](h
 
 To train TAPB, we provide the basic configurations for hyperparameters in `model_config.yaml` and `train_config.yaml`.
 
-💡For that we use Molformer's tokenizer to seg SMILES and ESM-2 to extract target features. Please download the weights and related files and put them into `./models/drug/molformer` and `./protein/esm2_model`, separately.  
+💡For that we use Molformer's tokenizer to tokenize SMILES and ESM-2 to extract target features. Please download the weights and related files and put them into `./models/drug/molformer` and `./protein/esm2_model`, separately.  
 
 To accelerate the training process and reduce GPU memory usage, we pre-extract and save the target features for each dataset using ESM-2.
 
