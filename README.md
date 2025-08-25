@@ -1,4 +1,4 @@
-# TAPB: An Interventional Debiasing Framework for Alleviating Target Prior Bias in Drug-Target Interaction Prediction
+# TAPB: An Interventional Debiasing Framework for Alleviating Target Prior Bias in Drug-Target Interaction Prediction:star:
 
 This repository contains the PyTorch implementation of **TAPB**, which aims to alleviate target prior bias in DTI prediction.
 
@@ -37,7 +37,7 @@ For that we use Molformer's tokenizer to seg SMILES and ESM-2 to extract target 
 
 Molformer can be downloaded from [Molformer Hugging Face](https://huggingface.co/ibm-research/MoLFormer-XL-both-10pct/tree/main). ESM-2 can be downloaded from [ESM-2 Hugging Face](https://huggingface.co/facebook/esm2_t33_650M_UR50D). 
 
-Or, you can download both of the Molformer weights and the ESM-2 weights from our [OneDrive](https://1drv.ms/f/c/764a5294625e5035/Emy3-AWnwdZJsvmuLQa2qzwBXwK2JPVdJRG4t0mwallyNA)
+Or, you can download both of the Molformer weights and the ESM-2 weights from our [OneDrive](https://1drv.ms/f/c/764a5294625e5035/Emy3-AWnwdZJsvmuLQa2qzwBXwK2JPVdJRG4t0mwallyNA):kissing_heart:
 
 For the in-domain experiments, you can directly run the following command for interventional training. `${dataset}` could either be `bindingdb`, `biosnap`, or `davis`.
 
