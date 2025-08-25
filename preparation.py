@@ -92,20 +92,19 @@ def kmeans_for_c(train_config, train_df, save_path):
         sr = outputs.last_hidden_state.squeeze()
         featurelist.append(sr.mean(0).cpu())
         sr_2 = sr[1:-1, :].cpu()
-        # 遍历每个氨基酸及其对应的隐藏状态
         for i in range(sr_2.size(0)):
             aa = protein_seq[i]
-            vector = sr_2[i]  # 第 i 个氨基酸的隐藏状态
+            vector = sr_2[i]  # Hidden state of the i-th amino acid
             aa_features[aa].append(vector)
 
-    # 计算每种氨基酸的平均特征
+    # Calculate the average feature for each amino acid type
     aa_avg_list = []
-    for aa in sorted(aa_features.keys()):  # 排序是为了保证顺序一致（可选）
-        vectors = torch.stack(aa_features[aa])  # 将列表堆叠为 tensor
-        avg_vector = torch.mean(vectors, dim=0)  # 按行求平均
+    for aa in sorted(aa_features.keys()):  # Sorting ensures consistent order
+        vectors = torch.stack(aa_features[aa])  # Stack the list into a tensor
+        avg_vector = torch.mean(vectors, dim=0)  # Compute the mean along the rows
         aa_avg_list.append(avg_vector)
 
-    # 将所有氨基酸的平均特征组合成一个 tensor
+    # Combine the average features of all amino acids into a single tensor
     aa_tensor = torch.stack(aa_avg_list)
 
     cluster_dict = kmeans_c(featurelist, train_config, d_model)
