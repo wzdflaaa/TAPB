@@ -19,12 +19,14 @@ class DTIDataset(Dataset):
         # SMILES = randomize_smile(SMILES)
         # proteins
         pr_id = self.df.iloc[index]['pr_id']
+        pr_seq = self.df.iloc[index]['Protein']
         Protein = self.pr_features[pr_id]
         # labels
         y = self.df.iloc[index]["Y"]
         return {
             'SMILES': SMILES,
             'Protein': Protein,
+            'Protein_seq': pr_seq,
             'Y': y
         }
 
@@ -105,34 +107,63 @@ def mask_tokens(inputs, attention_mask, tokenizer, probability=0.15):
     # The rest of the time (10% of the time) we keep the masked input tokens unchanged
     return inputs, labels
 
-# target random mask
-def drop_tokens(batch, drop_prob=0.7):
+def drop_tokens(batch, drop_prob=0.7, aa_avg_f=None,mutation_rate=0):
     batch_id, batch_mask = batch['input_ids'], batch['attention_mask']
-    num_to_retain = int(max(1, batch_id.size(1) * (1-drop_prob)))
+    # Step 1: Target random deletion 
+    if 0 < drop_prob:
+        num_to_retain = int(max(1, batch_id.size(1) * (1-drop_prob)))
 
-    indices = sorted(random.sample(range(1, batch_id.size(1)), num_to_retain))
-    indices.insert(0, 0)
-    batch_id = batch_id[:, indices]
-    batch_mask = batch_mask[:, indices]
+        indices = sorted(random.sample(range(1, batch_id.size(1)), num_to_retain))
+        indices.insert(0, 0)
+        batch_id = batch_id[:, indices]
+        batch_mask = batch_mask[:, indices]
+
+    # Step 2: Random mutation
+    if aa_avg_f is not None and mutation_rate > 0:
+        # Excluding CLS and EOS positions
+        mask = batch_mask.clone()
+        mask[:, 0] = 0  # CLS token
+        eos_pos = mask.sum(dim=1).unsqueeze(1).to(dtype=torch.int64)
+        mask.scatter_(1, eos_pos, 0)  # EOS token
+        mask = mask.bool()
+        # generate replace mask
+        replace_mask = torch.rand(mask.shape) < mutation_rate
+        replace_mask &= mask
+
+        # generate random indices
+        random_indices = torch.randint(
+            0, aa_avg_f.size(0),
+            batch_id.shape[:2], device=batch_id.device
+        )
+
+        # replace amino acid feature
+        replacements = aa_avg_f[random_indices]
+
+        batch_id[replace_mask] = replacements[replace_mask]
+
     return batch_id, batch_mask
 
-def get_dataLoader(batch_size, dataset, drug_tokenizer, shuffle=False, MLM=False, mask_rate=0.15, target_mask_rate=0.7):
+def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, MLM=False,
+                   mask_rate=0, target_random_deletion_ratio=0, mutation_rate=0):
     def collate_fn(batch_samples):
-        batch_Drug, batch_Protein, batch_label = [], [], []
+        batch_Drug, batch_Protein, batch_seq, batch_label = [], [], [], []
         for sample in batch_samples:
-            batch_Protein.append(sample['Protein'])
             batch_Drug.append(sample['SMILES'])
+            batch_Protein.append(sample['Protein'])
+            batch_seq.append(sample['Protein_seq'])
             batch_label.append(sample['Y'])
         batch_pr = convert_batch_pr(batch_Protein)
         batch_inputs_drug = drug_tokenizer(batch_Drug, padding='longest', return_tensors="pt", truncation=True, max_length=200)
         batch_inputs_drug_m, masked_drug_labels = None, None
-        if shuffle:
-            batch_pr['input_ids'], batch_pr['attention_mask'] = drop_tokens(batch_pr, target_mask_rate)
-            # batch_Drug['input_ids'], batch_Drug['attention_mask'] = drop_tokens(batch_Drug, 0.7)
-            # batch_inputs_drug['input_ids'], batch_inputs_drug['attention_mask'] = drop_tokens(batch_inputs_drug, 0.5)
+        # if 0 < target_mask_rate:
+        batch_pr['input_ids'], batch_pr['attention_mask'] = drop_tokens(batch_pr, target_random_deletion_ratio,
+                                                                            aa_avg_f=aa, mutation_rate=mutation_rate)
+
+        if MLM:
             batch_inputs_drug_m = batch_inputs_drug
             batch_inputs_drug_m['input_ids'], masked_drug_labels\
                 = mask_tokens(batch_inputs_drug_m['input_ids'], batch_inputs_drug_m['attention_mask'], drug_tokenizer,mask_rate)
+
         return {
             'batch_inputs_drug': batch_inputs_drug,
             'batch_inputs_drug_m': batch_inputs_drug_m,
