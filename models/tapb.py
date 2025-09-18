@@ -84,7 +84,7 @@ class TAPB(nn.Module):
 
     def encode_protein(self, pr_f, pr_mask):
         bz = pr_mask.size(0)
-        c_i = self.z.unsqueeze(0).expand(bz, -1, -1)
+        c_i = self.c.unsqueeze(0).expand(bz, -1, -1)
         pr_f = self.confounder_aligment_module(pr_f, c_i)
 
         # pr_f = self.pr_linear(pr_f)
