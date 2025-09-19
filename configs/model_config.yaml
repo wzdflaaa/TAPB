@@ -1,6 +1,6 @@
 DrugEncoder:
   model: 'RoBert'
-  d_model : 128
+  d_model : 256
   n_layer : 3
   n_head : 8
   attention : 'OriginMHA'
@@ -12,7 +12,7 @@ PrEncoder:
   d_model : 1280
 
 TransformerDeocder:
-  d_model: 128
+  d_model: 256
   n_layer: 3
   n_head: 8
   attention: 'OriginMHA'
