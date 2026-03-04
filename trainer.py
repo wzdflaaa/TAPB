@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 
 class Trainer(object):
-    def __init__(self, model, optim, device, train_dataloader, val_dataloader, test_dataloader, output_path, config):
+    def __init__(self, model, optim, device, train_dataloader, val_dataloader, test_dataloader, output_path, config, forward_mode="tapb"):
         self.model = model
         self.optim = optim
         self.device = device
@@ -34,6 +34,7 @@ class Trainer(object):
         self.val_loss_epoch, self.val_auroc_epoch = [], []
         self.test_metrics = {}
         self.config = config
+        self.forward_mode = forward_mode
         self.output_dir = output_path
         valid_metric_header = ["# Epoch", "AUROC", "AUPRC"]
         test_metric_header = ["# Best Epoch", "AUROC", "AUPRC", "F1", "Sensitivity", "Specificity", "Accuracy",
@@ -124,12 +125,12 @@ class Trainer(object):
             if drug_labels is not None:
                 inputs_drugs_m = batch['batch_inputs_drug_m'].to(self.device)
                 drug_labels = drug_labels.to(self.device)
-                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, masked_drugs=inputs_drugs_m)
+                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, masked_drugs=inputs_drugs_m, mode=self.forward_mode)
                 b_loss = cross_entropy(output['logits'], labels)
                 mlm_loss = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'], drug_labels)
                 loss = b_loss + mlm_loss
             else:
-                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask)
+                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, mode=self.forward_mode)
                 loss = cross_entropy(output['logits'], labels)
 
             loss.backward()
@@ -162,9 +163,9 @@ class Trainer(object):
                 input_drugs = batch['batch_inputs_drug'].to(self.device)
                 pr_mask = batch['batch_inputs_pr']['attention_mask'].to(self.device)
                 if dataloader == "val":
-                    output = self.model(input_drugs, input_proteins, pr_mask=pr_mask)
+                    output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, mode=self.forward_mode)
                 elif dataloader == "test":
-                    output = self.best_model(input_drugs, input_proteins, pr_mask=pr_mask)
+                    output = self.best_model(input_drugs, input_proteins, pr_mask=pr_mask, mode=self.forward_mode)
 
                 n = output['logits'][:, 1]
                 y_label = y_label + labels
