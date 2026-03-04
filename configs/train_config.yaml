@@ -14,3 +14,5 @@ TRAIN:
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
   OUTPUT_DIR : "seed_"
+  USE_CONFOUNDER : True
+  FORWARD_MODE : "tapb"
