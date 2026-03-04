@@ -62,17 +62,22 @@ class TAPB(nn.Module):
         # interventional training
         self.c = c
         self.p_ci = p_ci
-        self.c_center = c.size(0)
+        self.c_center = None if c is None else c.size(0)
         self.ln = nn.LayerNorm(d_esm)
-        if (1280 % self.c_center)!=0:
-            raise RuntimeError(F"d_model % self.c_center)!=0")
-        elif self.c_center != fusion_n_heads:
-            raise RuntimeError(F"confounder dict self.c_center != n_heads")
+        if self.c_center is not None:
+            if (1280 % self.c_center)!=0:
+                raise RuntimeError(F"d_model % self.c_center)!=0")
+            elif self.c_center != fusion_n_heads:
+                raise RuntimeError(F"confounder dict self.c_center != n_heads")
+            else:
+                dim = int(d_esm / self.c_center)
+            self.linear_q = nn.Linear(d_esm, d_esm)
+            self.linear_k = nn.Linear(d_esm, dim)
+            self.linear_v = nn.Linear(d_esm, dim)
         else:
-            dim = int(d_esm / self.c_center)
-        self.linear_q = nn.Linear(d_esm, d_esm)
-        self.linear_k = nn.Linear(d_esm, dim)
-        self.linear_v = nn.Linear(d_esm, dim)
+            self.linear_q = None
+            self.linear_k = None
+            self.linear_v = None
         self.pr_linear = nn.Linear(d_esm, d_model)
 
     def encode_drug(self, input_drugs, freqs_cis):
@@ -84,6 +89,8 @@ class TAPB(nn.Module):
         return drug_f
 
     def encode_protein(self, pr_f, pr_mask):
+        if self.c is None:
+            raise RuntimeError("Confounder dictionary is required for TAPB mode.")
         bz = pr_mask.size(0)
         c_i = self.c.unsqueeze(0).expand(bz, -1, -1)
         pr_f = self.confounder_aligment_module(pr_f, c_i)
@@ -115,54 +122,48 @@ class TAPB(nn.Module):
         return fusion_f, attention_map
 
     def backdoor_adjustmet(self, logits):
+        if self.p_ci is None:
+            raise RuntimeError("p_ci is required for backdoor adjustment in TAPB mode.")
         p_ci = self.p_ci.unsqueeze(0).unsqueeze(-1)
         logits = logits * p_ci
         return logits.sum(1)
-    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,mode="tapb"):
+    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None, mode="tapb"):
         if mode == "baseline":
-        return self.forward_baseline(drug, target)
-    else:
-        return self.forward_tapb(drug, target)
-    raise ValueError(f"Unsupported mode: {mode}. Expected 'tapb' or 'baseline'.")
+            return self.forward_baseline(input_drugs, input_proteins, pr_mask, masked_drugs)
+        if mode == "tapb":
+            return self.forward_tapb(input_drugs, input_proteins, pr_mask, masked_drugs)
+        raise ValueError(f"Unsupported mode: {mode}. Expected 'tapb' or 'baseline'.")
     def forward_tapb(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
-            # encode
-            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
-            pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
-
-            # fusion
-            fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
-
-            # mlm
-            drug_mlm_logits = None
-            if masked_drugs is not None:
-                drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
-                drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
-
-            bz = fusion_f.size(0)
-            c_i = fusion_f.view(bz, -1, self.c_center, self.d_model // self.c_center).mean(1)
-            # c_i = fusion_f.mean(1)
-            logits = self.classifier(c_i)
-            # logits = self.classifier2(c_i)
-            logits = F.softmax(logits, dim=-1)
-            logits = self.backdoor_adjustmet(logits).squeeze()
-
-            return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
-   def forward_baseline(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
-            # encode (no CAM alignment)
-            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
-            pr_f = self.pr_linear(input_proteins)
-
-            # fusion
-            fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
-
-            # mlm
-            drug_mlm_logits = None
-            if masked_drugs is not None:
-                drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
-                drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
-
-            pooled_f = fusion_f.mean(1)
-            logits = self.classifier_baseline(pooled_f)
-            logits = F.softmax(logits, dim=-1)[:, 1]
-
-            return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+        if self.c is None or self.p_ci is None:
+            raise RuntimeError("TAPB mode requires confounder dictionary and prior.")
+        # encode
+        drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
+        pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
+        # fusion
+        fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
+        # mlm
+        drug_mlm_logits = None
+        if masked_drugs is not None:
+            drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
+            drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
+        bz = fusion_f.size(0)
+        c_i = fusion_f.view(bz, -1, self.c_center, self.d_model // self.c_center).mean(1)
+        logits = self.classifier(c_i)
+        logits = F.softmax(logits, dim=-1)
+        logits = self.backdoor_adjustmet(logits).squeeze()
+        return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+    def forward_baseline(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
+        # encode (no CAM alignment)
+        drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
+        pr_f = self.pr_linear(input_proteins)
+        # fusion
+        fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
+        # mlm
+        drug_mlm_logits = None
+        if masked_drugs is not None:
+            drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
+            drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
+        pooled_f = fusion_f.mean(1)
+        logits = self.classifier_baseline(pooled_f)
+        logits = F.softmax(logits, dim=-1)
+        return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
