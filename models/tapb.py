@@ -54,7 +54,8 @@ class TAPB(nn.Module):
         # Fusion
         self.aggregator = TransformerDecoder(config=model_configs['TransformerDeocder'])
         self.classifier = nn.Linear(self.d_model // self.fusion_n_heads, 2)
-
+        # classifier is used for TAPB ablation study(baseline)
+        self.classifier_baseline = nn.Linear(self.d_model, 2)
         # classifier2 is used for TAPB ablation study
         # self.classifier2 = nn.Linear(self.d_model, 2)
 
@@ -117,8 +118,13 @@ class TAPB(nn.Module):
         p_ci = self.p_ci.unsqueeze(0).unsqueeze(-1)
         logits = logits * p_ci
         return logits.sum(1)
-
-    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
+    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,mode="tapb"):
+        if mode == "baseline":
+        return self.forward_baseline(drug, target)
+    else:
+        return self.forward_tapb(drug, target)
+    raise ValueError(f"Unsupported mode: {mode}. Expected 'tapb' or 'baseline'.")
+    def forward_tapb(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
             # encode
             drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
             pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
@@ -139,5 +145,24 @@ class TAPB(nn.Module):
             # logits = self.classifier2(c_i)
             logits = F.softmax(logits, dim=-1)
             logits = self.backdoor_adjustmet(logits).squeeze()
+
+            return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+   def forward_baseline(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
+            # encode (no CAM alignment)
+            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
+            pr_f = self.pr_linear(input_proteins)
+
+            # fusion
+            fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
+
+            # mlm
+            drug_mlm_logits = None
+            if masked_drugs is not None:
+                drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
+                drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
+
+            pooled_f = fusion_f.mean(1)
+            logits = self.classifier_baseline(pooled_f)
+            logits = F.softmax(logits, dim=-1)[:, 1]
 
             return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
