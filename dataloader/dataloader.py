@@ -165,7 +165,10 @@ def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, M
             )
 
         if MLM:
-            batch_inputs_drug_m = batch_inputs_drug
+            batch_inputs_drug_m = {
+                "input_ids": batch_inputs_drug["input_ids"].clone(),
+                "attention_mask": batch_inputs_drug["attention_mask"].clone()
+            }
             batch_inputs_drug_m['input_ids'], masked_drug_labels\
                 = mask_tokens(batch_inputs_drug_m['input_ids'], batch_inputs_drug_m['attention_mask'], drug_tokenizer,mask_rate)
 
