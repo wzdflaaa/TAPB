@@ -33,6 +33,13 @@ def main():
     model_config = load_config_file(MODEL_CONFIG_PATH)
     config = OmegaConf.merge(train_config, model_config)
     model_configs = dict(model_config)
+    use_confounder = bool(config.TRAIN.USE_CONFOUNDER)
+    forward_mode = str(config.TRAIN.FORWARD_MODE).lower()
+    enable_protein_augmentation = bool(config.TRAIN.ENABLE_PROTEIN_AUGMENTATION)
+    if forward_mode == "tapb" and not use_confounder:
+        raise ValueError("TAPB mode requires TRAIN.USE_CONFOUNDER=True.")
+    if forward_mode == "baseline":
+        enable_protein_augmentation = False
     set_seed(seed=config.TRAIN.SEED)
     output_path = f"./results/{args.data}/{args.split}/{config.TRAIN.OUTPUT_DIR}{config.TRAIN.SEED}"
     mkdir(output_path)
@@ -88,14 +95,22 @@ def main():
     drug_tokenizer = AutoTokenizer.from_pretrained(mol_path, trust_remote_code=True)
     bz = config.TRAIN.BATCH_SIZE
     MLM = config.TRAIN.MLM
-    train_dataloader = get_dataLoader(bz, train_dataset, drug_tokenizer, aa=aa_dict, shuffle=True, MLM=MLM,
-                                      mask_rate=config.TRAIN.MASK_PROBABILITY,
-                                      target_random_deletion_ratio=config.TRAIN.TARGET_RANDOM_DROP_RATIO,
-                                      mutation_rate=config.TRAIN.MUTAION)
+    train_dataloader = get_dataLoader(
+        bz,
+        train_dataset,
+        drug_tokenizer,
+        aa=aa_dict,
+        shuffle=True,
+        MLM=MLM,
+        mask_rate=config.TRAIN.MASK_PROBABILITY,
+        target_random_deletion_ratio=config.TRAIN.TARGET_RANDOM_DROP_RATIO,
+        mutation_rate=config.TRAIN.MUTAION,
+        enable_protein_augmentation=enable_protein_augmentation
+    )
     val_dataloader = get_dataLoader(bz, val_dataset, drug_tokenizer)
     test_dataloader = get_dataLoader(bz, test_dataset, drug_tokenizer)
 
-    trainer = Trainer(model, opt, device, train_dataloader, val_dataloader, test_dataloader, output_path, config)
+    trainer = Trainer(model, opt, device, train_dataloader, val_dataloader, test_dataloader, output_path, config, forward_mode=forward_mode)
     result, best_epoch = trainer.train()
 
 
