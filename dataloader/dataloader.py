@@ -144,7 +144,7 @@ def drop_tokens(batch, drop_prob=0.7, aa_avg_f=None,mutation_rate=0):
     return batch_id, batch_mask
 
 def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, MLM=False,
-                   mask_rate=0, target_random_deletion_ratio=0, mutation_rate=0):
+                   mask_rate=0, target_random_deletion_ratio=0, mutation_rate=0, enable_protein_augmentation=True):
     def collate_fn(batch_samples):
         batch_Drug, batch_Protein, batch_seq, batch_label = [], [], [], []
         for sample in batch_samples:
@@ -156,8 +156,13 @@ def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, M
         batch_inputs_drug = drug_tokenizer(batch_Drug, padding='longest', return_tensors="pt", truncation=True, max_length=200)
         batch_inputs_drug_m, masked_drug_labels = None, None
         # if 0 < target_mask_rate:
-        batch_pr['input_ids'], batch_pr['attention_mask'] = drop_tokens(batch_pr, target_random_deletion_ratio,
-                                                                            aa_avg_f=aa, mutation_rate=mutation_rate)
+        if enable_protein_augmentation:
+            batch_pr['input_ids'], batch_pr['attention_mask'] = drop_tokens(
+                batch_pr,
+                target_random_deletion_ratio,
+                aa_avg_f=aa,
+                mutation_rate=mutation_rate
+            )
 
         if MLM:
             batch_inputs_drug_m = batch_inputs_drug
