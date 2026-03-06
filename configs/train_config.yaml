@@ -14,3 +14,10 @@ TRAIN:
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
   OUTPUT_DIR : "seed_"
+
+  # Bias diagnosis during evaluation
+  BIAS_DIAG : False
+  OVERRIDE_MODE : "zero"  # [zero, mean]
+  USE_DEBIASED_SCORE : True
+  LAMBDA_T : 1.0
+  LAMBDA_D : 1.0

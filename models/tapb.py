@@ -74,7 +74,9 @@ class TAPB(nn.Module):
         self.linear_v = nn.Linear(d_esm, dim)
         self.pr_linear = nn.Linear(d_esm, d_model)
 
-    def encode_drug(self, input_drugs, freqs_cis):
+    def encode_drug(self, input_drugs, freqs_cis, override_drug_emb=None):
+        if override_drug_emb is not None:
+            return override_drug_emb
         drug_id = input_drugs['input_ids']
         drug_padding_mask = ~input_drugs['attention_mask'].bool()
         bz, len_d = drug_id.size()
@@ -82,7 +84,9 @@ class TAPB(nn.Module):
         drug_f = self.drug_encoder(drug_id, drug_attn_mask, freqs_cis[:len_d, :].to(drug_id.device))
         return drug_f
 
-    def encode_protein(self, pr_f, pr_mask):
+    def encode_protein(self, pr_f, pr_mask, override_target_emb=None):
+        if override_target_emb is not None:
+            return override_target_emb, pr_mask
         bz = pr_mask.size(0)
         c_i = self.c.unsqueeze(0).expand(bz, -1, -1)
         pr_f = self.confounder_aligment_module(pr_f, c_i)
@@ -118,10 +122,11 @@ class TAPB(nn.Module):
         logits = logits * p_ci
         return logits.sum(1)
 
-    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
+    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,
+                override_drug_emb=None, override_target_emb=None, return_embeddings=False):
             # encode
-            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
-            pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
+            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis, override_drug_emb=override_drug_emb)
+            pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask, override_target_emb=override_target_emb)
 
             # fusion
             fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
@@ -138,6 +143,10 @@ class TAPB(nn.Module):
             logits = self.classifier(c_i)
             # logits = self.classifier2(c_i)
             logits = F.softmax(logits, dim=-1)
-            logits = self.backdoor_adjustmet(logits).squeeze()
+            logits = self.backdoor_adjustmet(logits)
 
-            return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+            output = {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+            if return_embeddings:
+                output['drug_emb'] = drug_f
+                output['target_emb'] = pr_f
+            return output

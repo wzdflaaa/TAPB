@@ -44,6 +44,15 @@ class Trainer(object):
         self.test_table = PrettyTable(test_metric_header)
         self.train_table = PrettyTable(train_metric_header)
 
+    @staticmethod
+    def _build_override_embedding(emb, mode="zero"):
+        if mode == "zero":
+            return torch.zeros_like(emb)
+        if mode == "mean":
+            mean_emb = emb.mean(dim=1, keepdim=True)
+            return mean_emb.expand_as(emb)
+        raise ValueError(f"Unsupported override mode: {mode}")
+
     def train(self):
         float2str = lambda x: '%0.4f' % x
         for i in range(self.epochs):
@@ -142,6 +151,12 @@ class Trainer(object):
 
     def test(self, dataloader="test"):
         y_label, y_pred = [], []
+        y_pred_factual, y_pred_tonly, y_pred_donly = [], [], []
+        enable_bias_diag = bool(getattr(self.config.TRAIN, "BIAS_DIAG", False)) and dataloader == "test"
+        lam_t = float(getattr(self.config.TRAIN, "LAMBDA_T", 1.0))
+        lam_d = float(getattr(self.config.TRAIN, "LAMBDA_D", 1.0))
+        override_mode = str(getattr(self.config.TRAIN, "OVERRIDE_MODE", "zero")).lower()
+        use_debiased_score = bool(getattr(self.config.TRAIN, "USE_DEBIASED_SCORE", True))
         if dataloader == "test":
             data_loader = self.test_dataloader
         elif dataloader == "val":
@@ -150,10 +165,11 @@ class Trainer(object):
             raise ValueError(f"Error key value {dataloader}")
         loop = tqdm(data_loader, colour='#f47983', file=sys.stdout)
         with torch.no_grad():
-            self.model.eval()
             if dataloader == "val":
+                self.model.eval()
                 loop.set_description(f'Validation')
             elif dataloader == "test":
+                self.best_model.eval()
                 loop.set_description(f'Test')
             for step, batch in enumerate(loop):
 
@@ -164,9 +180,41 @@ class Trainer(object):
                 if dataloader == "val":
                     output = self.model(input_drugs, input_proteins, pr_mask=pr_mask)
                 elif dataloader == "test":
-                    output = self.best_model(input_drugs, input_proteins, pr_mask=pr_mask)
+                    output = self.best_model(
+                        input_drugs,
+                        input_proteins,
+                        pr_mask=pr_mask,
+                        return_embeddings=enable_bias_diag,
+                    )
 
                 n = output['logits'][:, 1]
+                if enable_bias_diag:
+                    drug_const = self._build_override_embedding(output['drug_emb'], mode=override_mode)
+                    target_const = self._build_override_embedding(output['target_emb'], mode=override_mode)
+
+                    output_tonly = self.best_model(
+                        input_drugs,
+                        input_proteins,
+                        pr_mask=pr_mask,
+                        override_drug_emb=drug_const,
+                    )
+                    output_donly = self.best_model(
+                        input_drugs,
+                        input_proteins,
+                        pr_mask=pr_mask,
+                        override_target_emb=target_const,
+                    )
+
+                    n_tonly = output_tonly['logits'][:, 1]
+                    n_donly = output_donly['logits'][:, 1]
+                    n_debias = n - lam_t * n_tonly - lam_d * n_donly
+
+                    y_pred_factual = y_pred_factual + n.tolist()
+                    y_pred_tonly = y_pred_tonly + n_tonly.tolist()
+                    y_pred_donly = y_pred_donly + n_donly.tolist()
+                    if use_debiased_score:
+                        n = n_debias
+
                 y_label = y_label + labels
                 y_pred = y_pred + n.tolist()
         auroc = roc_auc_score(y_label, y_pred)
@@ -179,7 +227,8 @@ class Trainer(object):
             optimal_idx = np.argmax(tpr - fpr)
             optimal_threshold = thresholds[optimal_idx]
 
-            y_pred_bin = (y_pred >= optimal_threshold).astype(int)
+            y_pred_array = np.asarray(y_pred)
+            y_pred_bin = (y_pred_array >= optimal_threshold).astype(int)
 
             # confusion matrix
             tn, fp, fn, tp = confusion_matrix(y_label, y_pred_bin).ravel()
@@ -189,6 +238,17 @@ class Trainer(object):
             sensitivity = tp / (tp + fn)  # recall
             specificity = tn / (tn + fp)
             f1 = f1_score(y_label, y_pred_bin)
+            if enable_bias_diag:
+                self.test_metrics["logit_factual"] = y_pred_factual
+                self.test_metrics["logit_tonly"] = y_pred_tonly
+                self.test_metrics["logit_donly"] = y_pred_donly
+                self.test_metrics["logit_debias"] = (
+                    np.asarray(y_pred_factual) - lam_t * np.asarray(y_pred_tonly) - lam_d * np.asarray(y_pred_donly)
+                ).tolist()
+                self.test_metrics["lambda_t"] = lam_t
+                self.test_metrics["lambda_d"] = lam_d
+                self.test_metrics["override_mode"] = override_mode
+                self.test_metrics["use_debiased_score"] = use_debiased_score
             return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold
         else:
             return auroc, auprc
