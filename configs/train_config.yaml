@@ -9,7 +9,7 @@ TRAIN:
   MUTAION: 0.2
   C_PATH : "C_1280_2000_8.pkl"
   PR_PATH : "pr_f_1280_2000.pkl"
-  DICT_SIZE : 8
+  DICT_SIZE : 3
   MLM : True
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
