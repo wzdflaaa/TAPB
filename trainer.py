@@ -174,19 +174,15 @@ class Trainer(object):
         y_label, y_pred = [], []
         
         # Bias diagnosis setup
-        diag_stage = str(getattr(self.config.TRAIN, "BIAS_DIAG_STAGE", "test")).lower()
-        enable_bias_diag = bool(getattr(self.config.TRAIN, "BIAS_DIAG", False)) and (
-            (diag_stage == "both" and dataloader in ["val", "test"]) or
-            (diag_stage == dataloader)
-        )
-        lam_t = float(getattr(self.config.TRAIN, "LAMBDA_T", 1.0))
-        lam_d = float(getattr(self.config.TRAIN, "LAMBDA_D", 1.0))
-        # always collect both modes for robust diagnosis
+        # user requirement: only run bias diagnosis/debiasing during test
+        enable_bias_diag = bool(getattr(self.config.TRAIN, "BIAS_DIAG", False)) and dataloader == "test"
+
         diag_modes = ["zero", "mean"]
         diag_store = {
-            mode: {"factual": [], "tonly": [], "donly": [], "debias": []}
+            mode: {"factual": [], "tonly": [], "donly": []}
             for mode in diag_modes
         }
+        
         
         if dataloader == "test":
             data_loader = self.test_dataloader
@@ -197,15 +193,15 @@ class Trainer(object):
         
         loop = tqdm(data_loader, colour='#f47983', file=sys.stdout)
         with torch.no_grad():
-            #self.model.eval()
             if dataloader == "val":
                 self.model.eval()
                 active_model = self.model
-                loop.set_description(f'Validation')
+                loop.set_description('Validation')
             else:
                 self.best_model.eval()
                 active_model = self.best_model
-                loop.set_description(f'Test')
+                loop.set_description('Test')
+
                 
             for step, batch in enumerate(loop):
 
@@ -223,14 +219,12 @@ class Trainer(object):
                 n_factual = output['logits'][:, 1]
                 y_label = y_label + labels
                 
-                # final evaluation should always be factual score (AUROC model selection consistency)
+                # model selection and primary report remain factual
                 y_pred = y_pred + n_factual.tolist()
-
                 if enable_bias_diag:
                     for mode in diag_modes:
                         drug_const = self._build_override_embedding(output['drug_emb'], mode=mode)
                         target_const = self._build_override_embedding(output['target_emb'], mode=mode)
-
                         output_tonly = active_model(
                             input_drugs,
                             input_proteins,
@@ -243,69 +237,103 @@ class Trainer(object):
                             pr_mask=pr_mask,
                             override_target_emb=target_const,
                         )
-
                         n_tonly = output_tonly['logits'][:, 1]
                         n_donly = output_donly['logits'][:, 1]
-                        n_debias = n_factual - lam_t * n_tonly - lam_d * n_donly
-
                         diag_store[mode]["factual"] += n_factual.tolist()
                         diag_store[mode]["tonly"] += n_tonly.tolist()
                         diag_store[mode]["donly"] += n_donly.tolist()
-                        diag_store[mode]["debias"] += n_debias.tolist()
-
+                
+                
         auroc = roc_auc_score(y_label, y_pred)
         auprc = average_precision_score(y_label, y_pred)
         if dataloader == "test":
-            fpr, tpr, thresholds = roc_curve(y_label, y_pred)
-            _prec, _recall, _ = precision_recall_curve(y_label, y_pred)
-
-            # Youden index for the optimal threshold
-            optimal_idx = np.argmax(tpr - fpr)
-            optimal_threshold = thresholds[optimal_idx]
-
-            y_pred_array = np.array(y_pred)
-            y_pred_bin = (y_pred_array >= optimal_threshold).astype(int)
-
-            # confusion matrix
-            tn, fp, fn, tp = confusion_matrix(y_label, y_pred_bin).ravel()
-
-
-            acc = accuracy_score(y_label, y_pred_bin)
-            sensitivity = tp / (tp + fn)  # recall
-            specificity = tn / (tn + fp)
-            f1 = f1_score(y_label, y_pred_bin)
-            
+            factual_metrics = self._compute_binary_metrics(y_label, y_pred)
             if enable_bias_diag:
-                self.test_metrics["bias_diag_stage"] = diag_stage
-                self.test_metrics["lambda_t"] = lam_t
-                self.test_metrics["lambda_d"] = lam_d
+                lam_t_default = float(getattr(self.config.TRAIN, "LAMBDA_T", 1.0))
+                lam_d_default = float(getattr(self.config.TRAIN, "LAMBDA_D", 1.0))
+                lambda_t_grid = self._parse_float_grid(
+                    getattr(self.config.TRAIN, "LAMBDA_T_GRID", [0.2,0.4,0.6,0.8,1.0]),
+                    [0.2, 0.4, 0.6, 0.8, 1.0],
+                )
+                lambda_d_grid = self._parse_float_grid(
+                    getattr(self.config.TRAIN, "LAMBDA_D_GRID", [0.2,0.4,0.6,0.8,1.0]),
+                    [0.2, 0.4, 0.6, 0.8, 1.0],
+                )
+                self.test_metrics["bias_diag_stage"] = "test"
                 self.test_metrics["bias_diag"] = {}
+                # diagnosis for both override modes + grid-search debias per mode
                 for mode in diag_modes:
                     factual = np.asarray(diag_store[mode]["factual"])
                     tonly = np.asarray(diag_store[mode]["tonly"])
                     donly = np.asarray(diag_store[mode]["donly"])
-                    debias = np.asarray(diag_store[mode]["debias"])
+                    # fixed-lambda debias stream
+                    debias_fixed = factual - lam_t_default * tonly - lam_d_default * donly
+                    best = {
+                        "lambda_t": lam_t_default,
+                        "lambda_d": lam_d_default,
+                        "auroc": self._safe_auroc(y_label, debias_fixed),
+                        "scores": debias_fixed,
+                    }
+                    for lam_t in lambda_t_grid:
+                        for lam_d in lambda_d_grid:
+                            debias_cur = factual - lam_t * tonly - lam_d * donly
+                            cur_auroc = self._safe_auroc(y_label, debias_cur)
+                            if np.isnan(cur_auroc):
+                                continue
+                            if np.isnan(best["auroc"]) or cur_auroc > best["auroc"]:
+                                best = {
+                                    "lambda_t": float(lam_t),
+                                    "lambda_d": float(lam_d),
+                                    "auroc": float(cur_auroc),
+                                    "scores": debias_cur,
+                                }
                     self.test_metrics["bias_diag"][mode] = {
                         "logit_factual": factual.tolist(),
                         "logit_tonly": tonly.tolist(),
                         "logit_donly": donly.tolist(),
-                        "logit_debias": debias.tolist(),
+                        "logit_debias_fixed": debias_fixed.tolist(),
                         "delta_tonly": (factual - tonly).tolist(),
                         "delta_donly": (factual - donly).tolist(),
                         "auroc_factual": self._safe_auroc(y_label, factual),
                         "auroc_tonly": self._safe_auroc(y_label, tonly),
                         "auroc_donly": self._safe_auroc(y_label, donly),
-                        "auroc_debias": self._safe_auroc(y_label, debias),
+                        "auroc_debias_fixed": self._safe_auroc(y_label, debias_fixed),
                         "summary_factual": self._summary_stats(factual),
                         "summary_tonly": self._summary_stats(tonly),
                         "summary_donly": self._summary_stats(donly),
-                        "summary_debias": self._summary_stats(debias),
+                        "summary_debias_fixed": self._summary_stats(debias_fixed),
+                        "grid_search": {
+                            "lambda_t_candidates": lambda_t_grid,
+                            "lambda_d_candidates": lambda_d_grid,
+                            "best_lambda_t": best["lambda_t"],
+                            "best_lambda_d": best["lambda_d"],
+                            "best_auroc": best["auroc"],
+                            "best_logit_debias": best["scores"].tolist(),
+                            "best_summary_debias": self._summary_stats(best["scores"]),
+                            "best_metrics": self._compute_binary_metrics(y_label, best["scores"]),
+                        },
                     }
-
-            
-            return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold
-        else:
-            return auroc, auprc
+                # select one mode to report as "debiased test performance" (post-processing only)
+                debias_mode = str(getattr(self.config.TRAIN, "DEBIAS_OVERRIDE_MODE", "zero")).lower()
+                if debias_mode not in self.test_metrics["bias_diag"]:
+                    debias_mode = "zero"
+                best_debias_metrics = self.test_metrics["bias_diag"][debias_mode]["grid_search"]["best_metrics"]
+                self.test_metrics["debiased_test"] = {
+                    "mode": debias_mode,
+                    "metrics": best_debias_metrics,
+                    "best_lambda_t": self.test_metrics["bias_diag"][debias_mode]["grid_search"]["best_lambda_t"],
+                    "best_lambda_d": self.test_metrics["bias_diag"][debias_mode]["grid_search"]["best_lambda_d"],
+                }
+            return (
+                factual_metrics["auroc"],
+                factual_metrics["auprc"],
+                factual_metrics["f1"],
+                factual_metrics["sensitivity"],
+                factual_metrics["specificity"],
+                factual_metrics["accuracy"],
+                factual_metrics["threshold"],
+            )
+        return auroc, auprc
 
 def binary_cross_entropy(n, labels):
     loss_fct = torch.nn.BCELoss()

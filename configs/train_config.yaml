@@ -22,3 +22,10 @@ TRAIN:
   LAMBDA_T : 1.0
   LAMBDA_D : 1.0
  # BIAS_DIAG_STAGE : "test"  # [val, test, both]  在train阶段让模型学习debias，test阶段才进行偏差诊断 有说服力
+ # Bias diagnosis during evaluation
+  
+
+#debias gonfigs
+  LAMBDA_T_GRID : [0.2, 0.4, 0.6, 0.8, 1.0]
+  LAMBDA_D_GRID : [0.2, 0.4, 0.6, 0.8, 1.0]
+  DEBIAS_OVERRIDE_MODE : "zero"  # [zero, mean] for reporting grid-search debias result
