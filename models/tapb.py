@@ -71,8 +71,8 @@ class TAPB(nn.Module):
     
     
     def encode_drug(self, input_drugs, freqs_cis,override_drug_embed=None):
-        if override_drug_emb is not None:
-            return override_drug_emb
+        if override_drug_embed is not None:
+            return override_drug_embed
         
         drug_id = input_drugs['input_ids']
         drug_padding_mask = ~input_drugs['attention_mask'].bool()
@@ -122,10 +122,10 @@ class TAPB(nn.Module):
         return fusion_f, attention_map
 
 
-    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None
-                ,override_drug_emb=None
-                ,override_target_emb=None
-                return_embeddings=False,):
+    def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,
+                override_drug_emb=None,
+                override_target_emb=None,
+                return_embeddings=False):
             # encode
             drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis, 
                                       override_drug_emb=override_drug_emb)
