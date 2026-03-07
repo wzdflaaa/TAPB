@@ -11,7 +11,7 @@ from transformers import AutoTokenizer
 from models.tapb import TAPB
 from trainer import Trainer
 from utils.utils import set_seed, mkdir, load_config_file
-from preparation import generate_esm2_feature, kmeans_for_c
+from preparation import generate_esm2_feature
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 parser = argparse.ArgumentParser(description="TAPB for DTI prediction")
@@ -54,46 +54,37 @@ def main():
     df_test = pd.read_csv(test_path)
 
     protein_path = os.path.join(dataFolder, config.TRAIN.PR_PATH)
-    c_path = os.path.join(dataFolder, config.TRAIN.C_PATH)
 
     if not os.path.isfile(protein_path):
         generate_esm2_feature(config, args.data, args.split)
 
-    if not os.path.isfile(c_path):
-        kmeans_for_c(config, df_train, dataFolder)
-
-    C = pickle.load(open(c_path, 'rb'))
-
-    # confounder dict
-    c = torch.from_numpy(C['cluster_centers']).to(device).permute(1, 0).to(dtype=torch.float32)
-
-    # p_ci for backdoor adjustment
-    p_ci = C['prior'].to(device).to(dtype=torch.float32)
-
-    # amino acids dict for mutation
-    aa_dict = C['aa'].to(device).to(dtype=torch.float32)
-
-    # TAPB-Full
-    model = TAPB(c=c, p_ci=p_ci, model_configs=model_configs).to(device)
+# add:Baseline TAPB (no confounder/CAM/backdoor path)
+    model = TAPB(model_configs=model_configs).to(device)
 
     opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
                             lr=config.TRAIN.LR, weight_decay=config.TRAIN.WEIGHT_DECAY)
 
     protein_f = open(protein_path, 'rb')
     pr_f = pickle.load(protein_f)
+    
     train_dataset = DTIDataset(df_train.index.values, df_train, pr_f)
     val_dataset = DTIDataset(df_val.index.values, df_val, pr_f)
     test_dataset = DTIDataset(df_test.index.values, df_test, pr_f)
 
     drug_tokenizer = AutoTokenizer.from_pretrained(mol_path, trust_remote_code=True)
+    
     bz = config.TRAIN.BATCH_SIZE
+    
     MLM = config.TRAIN.MLM
-    train_dataloader = get_dataLoader(bz, train_dataset, drug_tokenizer, aa=aa_dict, shuffle=True, MLM=MLM,
+    
+    #去除了mutation和random_deletion，专注于masking--- CAM和数据增强(do(T))的相关参数
+    train_dataloader = get_dataLoader(bz, train_dataset, drug_tokenizer, shuffle=True, MLM=MLM,
                                       mask_rate=config.TRAIN.MASK_PROBABILITY,
-                                      target_random_deletion_ratio=config.TRAIN.TARGET_RANDOM_DROP_RATIO,
-                                      mutation_rate=config.TRAIN.MUTAION)
+                                      target_random_deletion_ratio=0,
+                                      mutation_rate=0)
     val_dataloader = get_dataLoader(bz, val_dataset, drug_tokenizer)
     test_dataloader = get_dataLoader(bz, test_dataset, drug_tokenizer)
+
 
     trainer = Trainer(model, opt, device, train_dataloader, val_dataloader, test_dataloader, output_path, config)
     result, best_epoch = trainer.train()

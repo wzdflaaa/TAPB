@@ -9,8 +9,16 @@ TRAIN:
   MUTAION: 0.2
   C_PATH : "C_1280_2000_8.pkl"
   PR_PATH : "pr_f_1280_2000.pkl"
-  DICT_SIZE : 3
+  DICT_SIZE : 8
   MLM : True
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
   OUTPUT_DIR : "seed_"
+
+  # Bias diagnosis during evaluation
+  BIAS_DIAG : False
+  OVERRIDE_MODE : "zero"  # [zero, mean]
+  USE_DEBIASED_SCORE : False
+  LAMBDA_T : 1.0
+  LAMBDA_D : 1.0
+ # BIAS_DIAG_STAGE : "test"  # [val, test, both]  在train阶段让模型学习debias，test阶段才进行偏差诊断 有说服力
