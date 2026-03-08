@@ -201,7 +201,7 @@ class Trainer(object):
             labels = torch.tensor(batch['labels']).to(self.device)
             drug_labels = batch['masked_drug_labels']
             if drug_labels is not None:
-                inputs_drugs_m = batch['batch_inputs_drug_m'].to(self.device)
+                inputs_drugs_m = {k: v.to(self.device) for k, v in batch['batch_inputs_drug_m'].items()}
                 drug_labels = drug_labels.to(self.device)
                 output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, masked_drugs=inputs_drugs_m)
                 b_loss = cross_entropy(output['logits'], labels)
