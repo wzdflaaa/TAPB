@@ -44,20 +44,6 @@ class Trainer(object):
         self.test_table = PrettyTable(test_metric_header)
         self.train_table = PrettyTable(train_metric_header)
         
-        @staticmethod
-        def _build_override_embedding(emb, mode="zero"):
-            if mode == "zero":
-                return torch.zeros_like(emb)
-            if mode == "mean":
-                mean_emb = emb.mean(dim=1, keepdim=True)
-                return mean_emb.expand_as(emb)
-        raise ValueError(f"Unsupported override mode: {mode}")
-
-        @staticmethod
-        def _safe_auroc(y_true, y_score):
-            if len(set(y_true)) < 2:
-                return float("nan")
-        return roc_auc_score(y_true, y_score)
 
     @staticmethod
     def _summary_stats(values):
@@ -72,6 +58,69 @@ class Trainer(object):
             "p50": float(np.percentile(arr, 50)),
             "p75": float(np.percentile(arr, 75)),
             "max": float(arr.max()),
+        }
+
+
+    @staticmethod
+    def _build_override_embedding(emb, mode="zero"):
+        if mode == "zero":
+            return torch.zeros_like(emb)
+        if mode == "mean":
+            mean_emb = emb.mean(dim=1, keepdim=True)
+            return mean_emb.expand_as(emb)
+        raise ValueError(f"Unsupported override mode: {mode}")
+
+    @staticmethod
+    def _safe_auroc(y_true, y_score):
+        if len(set(y_true)) < 2:
+            return float("nan")
+        return roc_auc_score(y_true, y_score)
+
+    @staticmethod
+    def _parse_float_grid(values, default_values):
+        if values is None:
+            return list(map(float, default_values))
+        if isinstance(values, str):
+            tokens = [v.strip() for v in values.split(',') if v.strip()]
+            if not tokens:
+                return list(map(float, default_values))
+            return [float(v) for v in tokens]
+        try:
+            parsed = [float(v) for v in values]
+            return parsed if parsed else list(map(float, default_values))
+        except TypeError:
+            return list(map(float, default_values))
+
+    @staticmethod
+    def _compute_binary_metrics(y_true, y_score):
+        y_true = np.asarray(y_true)
+        y_score = np.asarray(y_score)
+
+        # Some splits/folds can contain a single class; keep evaluation robust.
+        if len(np.unique(y_true)) < 2:
+            best_threshold = 0.5
+            auroc = float("nan")
+        else:
+            fpr, tpr, thresholds = roc_curve(y_true, y_score)
+            j_scores = tpr - fpr
+            best_idx = int(np.argmax(j_scores))
+            best_threshold = thresholds[best_idx]
+            auroc = roc_auc_score(y_true, y_score)
+
+        y_pred = (y_score >= best_threshold).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+
+        return {
+            "auroc": auroc,
+            "auprc": average_precision_score(y_true, y_score),
+            "f1": f1_score(y_true, y_pred, zero_division=0),
+            "sensitivity": sensitivity,
+            "specificity": specificity,
+            "accuracy": accuracy_score(y_true, y_pred),
+            "threshold": float(best_threshold),
         }
 
     def train(self):

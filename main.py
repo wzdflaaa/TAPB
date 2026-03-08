@@ -1,6 +1,7 @@
 import argparse
 import os
 import pickle
+from pickle import UnpicklingError
 import warnings
 from time import time
 import pandas as pd
@@ -55,8 +56,39 @@ def main():
 
     protein_path = os.path.join(dataFolder, config.TRAIN.PR_PATH)
 
-    if not os.path.isfile(protein_path):
-        generate_esm2_feature(config, args.data, args.split)
+    """
+    旧版本可能将蛋白特征存储为列表，按 pr_id排序。
+            -当读取内存--esm-2特征失败时则调用函数重新生成特征文件，并且在读取后检查数据格式
+    检查加载的数据是否为列表类型：
+    如果是，则通过合并训练集、验证集和测试集的 DataFrame（df_train、df_val、df_test）
+    提取唯一的 pr_id，并将列表转换为字典，键为 pr_id，值为对应特征。
+    这种处理确保了旧版本特征文件的向后兼容性，因为旧版本可能将蛋白质特征存储为与唯一 pr_id 顺序对应的列表。"""
+
+    def load_or_build_protein_features():
+        if not os.path.isfile(protein_path):
+            generate_esm2_feature(config, args.data, args.split)
+
+        try:
+            with open(protein_path, 'rb') as protein_f:
+                protein_features = pickle.load(protein_f)
+        except (UnpicklingError, EOFError, OSError, ValueError):
+            print(f"Warning: corrupted protein feature file detected at {protein_path}. Regenerating...")
+            if os.path.exists(protein_path):
+                os.remove(protein_path)
+            generate_esm2_feature(config, args.data, args.split)
+            with open(protein_path, 'rb') as protein_f:
+                protein_features = pickle.load(protein_f)
+
+        # Backward compatibility: old feature files may store a list ordered by unique pr_id.
+        if isinstance(protein_features, list):
+            all_df = pd.concat([df_train, df_val, df_test], ignore_index=True)
+            unique_pr_ids = all_df['pr_id'].unique()
+            protein_features = {pid: feature for pid, feature in zip(unique_pr_ids, protein_features)}
+
+        if not isinstance(protein_features, dict):
+            raise TypeError(f"Unsupported protein feature format: {type(protein_features)}")
+
+        return protein_features
 
 # add:Baseline TAPB (no confounder/CAM/backdoor path)
     model = TAPB(model_configs=model_configs).to(device)
@@ -64,9 +96,8 @@ def main():
     opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
                             lr=config.TRAIN.LR, weight_decay=config.TRAIN.WEIGHT_DECAY)
 
-    protein_f = open(protein_path, 'rb')
-    pr_f = pickle.load(protein_f)
-    
+    pr_f = load_or_build_protein_features()
+
     train_dataset = DTIDataset(df_train.index.values, df_train, pr_f)
     val_dataset = DTIDataset(df_val.index.values, df_val, pr_f)
     test_dataset = DTIDataset(df_test.index.values, df_test, pr_f)

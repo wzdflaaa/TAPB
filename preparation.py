@@ -1,4 +1,5 @@
 import os
+import tempfile
 import torch
 import pickle
 import numpy as np
@@ -27,19 +28,22 @@ def generate_esm2_feature(config, dataset, split):
     tokenizer = AutoTokenizer.from_pretrained(ems2_model_path)
     model = EsmModel.from_pretrained(ems2_model_path).to(device)
     model.eval()  # disables dropout for deterministic results
-    prlist = list()
+    pr_features = dict()
+    unique_ids = df['pr_id'].unique()
 
-    for protein_id in tqdm(df['pr_id'].unique(), desc='Processing'):
+    for protein_id in tqdm(unique_ids, desc='Processing'):
         protein_seq = df[df['pr_id'] == protein_id]['Protein'].iloc[0]
         inputs = tokenizer(protein_seq, return_tensors="pt", truncation=True, max_length=2000).to(device)
         with torch.no_grad():
             outputs = model(**inputs)
-        sr = outputs.last_hidden_state.squeeze()
-        prlist.append(sr)
+        sr = outputs.last_hidden_state.squeeze(0).cpu().to(torch.float32)
+        pr_features[protein_id] = sr
 
     save_path = os.path.join(dataset_path, config.TRAIN.PR_PATH)
-    file = open(save_path, 'wb')
-    pickle.dump(prlist, file)
+    with tempfile.NamedTemporaryFile('wb', delete=False, dir=dataset_path) as tmp_file:
+        pickle.dump(pr_features, tmp_file)
+        tmp_path = tmp_file.name
+    os.replace(tmp_path, save_path)
     print('finish generating esm2 feature')
 
 
