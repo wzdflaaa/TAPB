@@ -116,13 +116,16 @@ class Trainer(object):
             self.optim.zero_grad()
             self.step += 1
             r += 1
-            input_drugs = batch['batch_inputs_drug'].to(self.device)
+            
+            input_drugs = {k:v.to(self.device) for k,v in batch['batch_inputs_drug'].items()}
+            #input_drugs = batch['batch_inputs_drug'].to(self.device)
             input_proteins = batch['batch_inputs_pr']['input_ids'].to(self.device)
             pr_mask = batch['batch_inputs_pr']['attention_mask'].to(self.device)
             labels = torch.tensor(batch['labels']).to(self.device)
             drug_labels = batch['masked_drug_labels']
             if drug_labels is not None:
-                inputs_drugs_m = batch['batch_inputs_drug_m'].to(self.device)
+                #inputs_drugs_m = batch['batch_inputs_drug_m'].to(self.device)
+                inputs_drugs_m = {k:v.to(self.device) for k,v in batch['batch_inputs_drug_m'].items()}
                 drug_labels = drug_labels.to(self.device)
                 output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, masked_drugs=inputs_drugs_m)
                 b_loss = cross_entropy(output['logits'], labels)
@@ -203,3 +206,4 @@ def cross_entropy(preds, targets, reduction='none'):
     loss_f = nn.NLLLoss()
     loss = loss_f(preds, targets.long())
     return loss
+
