@@ -1,6 +1,6 @@
 import argparse
 import pathlib 
-import Path
+#import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -21,7 +21,7 @@ def parse_args():
     return parser.parse_args()
 
 #自动收集当前split下所有的*_with_id.csv文件路径
-def collect_csv_files(dataset_dir:Path):
+def collect_csv_files(dataset_dir:pathlib.Path):
     csv_files = sorted(dataset_dir.glob("*_with_id.csv")) #文件路径列表
     if not csv_files:
         raise FileNotFoundError(f"No *_with_id.csv files found in {dataset_dir}")   
@@ -63,27 +63,27 @@ def compute_group_metrics(df:pd.DataFrame,group_col:str,label_col:str):
     z=(n*np.abs(p-p_global))/N
     
     result = pd.DataFrame({group_col:n.index, 
-                            "sample":n.value, 
+                            "sample":n.values, 
                             "positive":positive, 
                             "negative":negative, 
-                            "p":p.value, "z":z.value})    
+                            "p":p.values, "z":z.values})    
     return result
 
 # 绘制 target 与 drug 的 p/Z 直方图
-def plot_histograms(target_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: Path):
-    # 创建 2x2 子图画布
+def plot_histograms(pr_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: pathlib.Path):
+    # 创建 2x2 子图画布.
     fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
     # 绘制 target 的 p 分布
-    axes[0, 0].hist(target_df["p"], bins=30)
+    axes[0, 0].hist(pr_df["p"], bins=30)
     axes[0, 0].set_title("Target p distribution")
     axes[0, 0].set_xlabel("p = positive / samples")
     axes[0, 0].set_ylabel("count")
 
     # 绘制 target 的 Z 分布
-    axes[0, 1].hist(target_df["Z"], bins=30)
+    axes[0, 1].hist(pr_df["z"], bins=30)
     axes[0, 1].set_title("Target Z distribution")
-    axes[0, 1].set_xlabel("Z = (n * |p - p_global|) / N")
+    axes[0, 1].set_xlabel("z = (n * |p - p_global|) / N")
     axes[0, 1].set_ylabel("count")
 
     # 绘制 drug 的 p 分布
@@ -93,9 +93,9 @@ def plot_histograms(target_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: 
     axes[1, 0].set_ylabel("count")
 
     # 绘制 drug 的 Z 分布
-    axes[1, 1].hist(drug_df["Z"], bins=30)
+    axes[1, 1].hist(drug_df["z"], bins=30)
     axes[1, 1].set_title("Drug Z distribution")
-    axes[1, 1].set_xlabel("Z = (n * |p - p_global|) / N")
+    axes[1, 1].set_xlabel("z = (n * |p - p_global|) / N")
     axes[1, 1].set_ylabel("count")
 
     # 自动调整子图间距避免标签重叠
@@ -108,7 +108,7 @@ def plot_histograms(target_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: 
 def main():
     args = parse_args()
     # 构造数据目录路径：datasets/{data}/{split}
-    dataset_dir = Path("datasets") / args.data / args.split
+    dataset_dir = pathlib.Path("datasets") / args.data / args.split
     # 若目录不存在则报错
     if not dataset_dir.exists():
         raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
@@ -133,7 +133,7 @@ def main():
     p_global = df["Y"].mean()
 
     # 构造输出目录：{output_dir}/{data}/{split}
-    out_dir = Path(args.output_dir) / args.data / args.split
+    out_dir = pathlib.Path(args.output_dir) / args.data / args.split
     # 递归创建输出目录
     out_dir.mkdir(parents=True, exist_ok=True)
     # 保存 protein 统计表
