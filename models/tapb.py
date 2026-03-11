@@ -34,18 +34,18 @@ class MLMHead(nn.Module):
         return logits
 
 class TAPB(nn.Module):
-    def __init__(self, model_configs, c=None, p_ci=None):
+    def __init__(self, model_configs):
         super().__init__()
         # Params
-        d_model = model_configs['DrugEncoder']['d_model']
-        n_heads = model_configs['DrugEncoder']['n_head']
-        vocab_size = model_configs['DrugEncoder']['vocab_size']
-        fusion_n_heads = model_configs['TransformerDeocder']['n_head']
-        self.d_model = d_model
-        self.encoder_n_heads = n_heads
+        d_model = model_configs['DrugEncoder']['d_model'] #drug encoder的输出维度
+        n_heads = model_configs['DrugEncoder']['n_head']  #drug encoder的head数量-注意力头数 
+        vocab_size = model_configs['DrugEncoder']['vocab_size'] #drug encoder的词表大小(用于MLM任务）)
+        fusion_n_heads = model_configs['TransformerDeocder']['n_head'] #fusion解码器的head数量（融合解码器的注意力头数）
+        self.d_model = d_model 
+        self.encoder_n_heads = n_heads 
         self.fusion_n_heads = fusion_n_heads
-        d_esm = 1280
 
+        
         # Drug
         self.precompute_freqs_cis = precompute_freqs_cis(d_model // n_heads, 4000)
         self.drug_encoder = TransformerEncoder(config=model_configs['DrugEncoder'])
@@ -55,25 +55,14 @@ class TAPB(nn.Module):
         self.aggregator = TransformerDecoder(config=model_configs['TransformerDeocder'])
         self.classifier = nn.Linear(self.d_model // self.fusion_n_heads, 2)
 
-        # classifier2 is used for TAPB ablation study
-        # self.classifier2 = nn.Linear(self.d_model, 2)
-
-        # interventional training
-        self.c = c
-        self.p_ci = p_ci
-        self.c_center = c.size(0)
-        self.ln = nn.LayerNorm(d_esm)
-        if (1280 % self.c_center)!=0:
-            raise RuntimeError(F"d_model % self.c_center)!=0")
-        elif self.c_center != fusion_n_heads:
-            raise RuntimeError(F"confounder dict self.c_center != n_heads")
-        else:
-            dim = int(d_esm / self.c_center)
-        self.linear_q = nn.Linear(d_esm, d_esm)
-        self.linear_k = nn.Linear(d_esm, dim)
-        self.linear_v = nn.Linear(d_esm, dim)
-        self.pr_linear = nn.Linear(d_esm, d_model)
-
+        # classifier2 is used for TAPB ablation study  消融实验部分__可以用来实现baseline
+        self.classifier2 = nn.Linear(self.d_model, 2)
+        
+        #Protein
+        self.pr_linear = nn.Linear(model_configs)
+        
+        
+        
     def encode_drug(self, input_drugs, freqs_cis):
         drug_id = input_drugs['input_ids']
         drug_padding_mask = ~input_drugs['attention_mask'].bool()
@@ -83,27 +72,10 @@ class TAPB(nn.Module):
         return drug_f
 
     def encode_protein(self, pr_f, pr_mask):
-        bz = pr_mask.size(0)
-        c_i = self.c.unsqueeze(0).expand(bz, -1, -1)
-        pr_f = self.confounder_aligment_module(pr_f, c_i)
-
-        # pr_f = self.pr_linear(pr_f)
+        #ablation: 直接使用预训练的蛋白质特征 投影到fusion所需维度d——model
+        pr_f = self.pr_linear(pr_f)
         return pr_f, pr_mask
 
-    def confounder_aligment_module(self, pr_f, ci):
-        device = pr_f.device
-        bz = pr_f.size(0)
-        Q = self.linear_q(pr_f).view(bz, -1, self.c_center, 1280 // self.c_center).permute(0, 2, 1, 3)
-        K = self.linear_k(ci).unsqueeze(1).permute(0, 2, 1, 3)
-        V = self.linear_v(ci).unsqueeze(1).permute(0, 2, 1, 3)
-        A = torch.matmul(Q, K.permute(0, 1, 3, 2))
-        A = F.softmax(A / torch.sqrt(torch.tensor(K.shape[1], dtype=torch.float32, device=device)), dim=-1)
-        Q = torch.matmul(A, V)
-        Q = Q.permute(0, 2, 1, 3).contiguous()
-        Q = Q.view(bz, -1, 1280)
-        Q = Q + pr_f
-        Q = self.pr_linear(Q)
-        return Q
 
     def fusion(self, drug_f, pr_f, drug_padding_mask, protein_padding_mask):
         bz, len_d, _ = drug_f.size()
@@ -113,11 +85,7 @@ class TAPB(nn.Module):
                                                 cross_attn_mask=cross_attn_mask)
         return fusion_f, attention_map
 
-    def backdoor_adjustmet(self, logits):
-        p_ci = self.p_ci.unsqueeze(0).unsqueeze(-1)
-        logits = logits * p_ci
-        return logits.sum(1)
-
+    
     def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None):
             # encode
             drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
@@ -132,12 +100,31 @@ class TAPB(nn.Module):
                 drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
                 drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
 
-            bz = fusion_f.size(0)
-            c_i = fusion_f.view(bz, -1, self.c_center, self.d_model // self.c_center).mean(1)
-            # c_i = fusion_f.mean(1)
-            logits = self.classifier(c_i)
-            # logits = self.classifier2(c_i)
+            #baseline：直接对融合后的特征进行池化，并分类
+            pool_f = fusion_f.mean(dim=1)
+            logits = self.classifier2(pool_f)
             logits = F.softmax(logits, dim=-1)
-            logits = self.backdoor_adjustmet(logits).squeeze()
 
             return {'logits': logits, 'fusion_f': fusion_f, 'attn_map': attn_map, 'drug_mlm_logits': drug_mlm_logits}
+    
+    """confounder alignment module 和 backdoor adjustment 的实现
+            已从模型中摘除，不再依赖 confounder / backdoor 参数
+    def confounder_aligment_module(self, pr_f, ci):
+        device = pr_f.device
+        bz = pr_f.size(0)
+        Q = self.linear_q(pr_f).view(bz, -1, self.c_center, 1280 // self.c_center).permute(0, 2, 1, 3)
+        K = self.linear_k(ci).unsqueeze(1).permute(0, 2, 1, 3)
+        V = self.linear_v(ci).unsqueeze(1).permute(0, 2, 1, 3)
+        A = torch.matmul(Q, K.permute(0, 1, 3, 2))
+        A = F.softmax(A / torch.sqrt(torch.tensor(K.shape[1], dtype=torch.float32, device=device)), dim=-1)
+        Q = torch.matmul(A, V)
+        Q = Q.permute(0, 2, 1, 3).contiguous()
+        Q = Q.view(bz, -1, 1280)
+        Q = Q + pr_f
+        Q = self.pr_linear(Q)
+        return Q
+    def backdoor_adjustmet(self, logits):
+        p_ci = self.p_ci.unsqueeze(0).unsqueeze(-1)
+        logits = logits * p_ci
+        return logits.sum(1)
+    """

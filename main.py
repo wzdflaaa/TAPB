@@ -59,26 +59,20 @@ def main():
     if not os.path.isfile(protein_path):
         generate_esm2_feature(config, args.data, args.split)
 
-    if not os.path.isfile(c_path):
-        kmeans_for_c(config, df_train, dataFolder)
+    #默认不使用氨基酸随机化字典
+    aa_dict = None
+    if config.TRAIN.ENABLE_AA_RANDOMIZATION: 
+        """若启用氨基酸随机化，则需要加载 C 文件（包含 aa 平均向量）以供 dataloader 的随机替换使用
+        仅当配置显式开启时，才能生成和读取C文件的aa统计字典,否则不生成也不读取,完全不依赖C文件（即使C文件不存在也不会报错）"""
+        if not os.path.isfile(c_path):
+            kmeans_for_c(config, df_train, dataFolder)
+        C = pickle.load(open(c_path, 'rb'))
+        # amino acid dictionary for randomization
+        aa_dict = C['aa'].to(device).to(dtype=torch.float32) # shape: (20, 1280) 20种氨基酸的平均向量，维度为1280
 
-    C = pickle.load(open(c_path, 'rb'))
-
-    # confounder dict
-    c = torch.from_numpy(C['cluster_centers']).to(device).permute(1, 0).to(dtype=torch.float32)
-
-    # p_ci for backdoor adjustment
-    p_ci = C['prior'].to(device).to(dtype=torch.float32)
-
-    # amino acids dict for mutation
-    aa_dict = C['aa'].to(device).to(dtype=torch.float32)
-
-    # TAPB-Full
-    model = TAPB(c=c, p_ci=p_ci, model_configs=model_configs).to(device)
-
-    opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=config.TRAIN.LR, weight_decay=config.TRAIN.WEIGHT_DECAY)
-
+    # 摘除后门调整的 TAPB（不再依赖 confounder / backdoor 参数）
+    model = TAPB(model_configs=model_configs).to(device)
+        
     protein_f = open(protein_path, 'rb')
     pr_f = pickle.load(protein_f)
     train_dataset = DTIDataset(df_train.index.values, df_train, pr_f)

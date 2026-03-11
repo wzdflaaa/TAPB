@@ -6,7 +6,8 @@ TRAIN:
   WEIGHT_DECAY : 1e-4
   MASK_PROBABILITY : 0.15
   TARGET_RANDOM_DROP_RATIO : 0.7
-  MUTAION: 0.2
+  MUTAION: 0 # 氨基酸随机替换概率，1: 氨基酸随机删除概率，2: 氨基酸随机插入概率  默认关闭该功能
+  ENABLE_AA_RANDOMIZATION : False #新增参数：是否启用aa字典随机化 默认关闭
   C_PATH : "C_1280_2000_8.pkl"
   PR_PATH : "pr_f_1280_2000.pkl"
   DICT_SIZE : 3
