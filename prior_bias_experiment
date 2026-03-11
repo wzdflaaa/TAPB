@@ -222,14 +222,12 @@ def save_group_analysis(
 
     # 定义输出文件路径
     stats_csv = out_dir / f"{prefix}_bias_stats.csv"
-    hist_png = out_dir / f"{prefix}_histograms.png"
     perm_png = out_dir / f"{prefix}_permutation_test.png"
     top10_csv = out_dir / f"{prefix}_top10_shortcut_entities.csv"
     top10_curve_png = out_dir / f"{prefix}_top10_cumulative_contribution.png"
 
     # 保存结果
     group_stats.to_csv(stats_csv, index=False)  # 保存详细统计
-    plot_histograms(group_stats, group_stats, hist_png)  # 绘制偏差统计的直方图（p 和 z 分布）
     plot_permutation_distribution(  # 绘制置换检验图
         perm_values,
         perm_summary["observed_Zw"],
@@ -245,7 +243,6 @@ def save_group_analysis(
         **group_summary,
         **perm_summary,
         "stats_csv": str(stats_csv),
-        "hist_png": str(hist_png),
         "perm_png": str(perm_png),
         "top10_csv": str(top10_csv),
         "top10_curve_png": str(top10_curve_png),
@@ -274,8 +271,8 @@ def main():
     protein_col = pick_protein_column(df)
     drug_col = pick_drug_column(df)
     
-    protein_stats = compute_group_metrics(df, protein_col, "Y")
-    drug_stats = compute_group_metrics(df, drug_col, "Y")
+    #protein_stats = compute_group_metrics(df, protein_col, "Y")
+    #drug_stats = compute_group_metrics(df, drug_col, "Y")
     p_global = df["Y"].mean()
 
     # 构造输出目录：{output_dir}/{data}/{split}
