@@ -1,4 +1,5 @@
 import argparse
+import json
 import pathlib 
 import numpy as np
 import pandas as pd
@@ -56,7 +57,8 @@ def sanitize_labels(df:pd.DataFrame,label_col:str="Y"):
     df=df.copy()
     df[label_col]=pd.to_numeric(df[label_col],errors="coerce").fillna(0).astype(int)
     df[label_col]=(df[label_col]>0).astype(int)
-    
+    return df
+
 #计算某侧分组维度(pr/drug) 统计信息
 def compute_group_metrics(df:pd.DataFrame,group_col:str,label_col:str):
     """
@@ -170,7 +172,7 @@ def plot_histograms(pr_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: path
 def plot_permutation_distribution(permuted_values:list, observed_value:float, title:str, output_png:pathlib.Path):
     plt.figure(figsize=(8, 6))
     plt.hist(permuted_values, bins=30, alpha=0.7, label="Permuted Zw")
-    plt.axvline(observed_value, color='red', linestyle='d--', linewidth=2, label=f"Observed Zw = {observed_value:.4f}")
+    plt.axvline(observed_value, color='red', linestyle='--', linewidth=2, label=f"Observed Zw = {observed_value:.4f}")
     plt.title(title)
     plt.xlabel("Zw (Weighted Bias Strength)")
     plt.ylabel("Frequency")
@@ -184,17 +186,17 @@ def get_shortcut_entities(group_stats:pd.DataFrame, group_col:str, top_k:int=10)
     top_df=group_stats.nlargest(top_k, 'z').copy().reset_index(drop=True) #按照 z 值降序选取前 k 个实体
     total_z=float(group_stats['z'].sum()) #计算所有实体的 z 值总和
     top_df['cum_z']=top_df['z'].cumsum() #计算累计z值(累计偏差综合)
-    top_df['cum_contribution_ratio']=top_df['cum_z']/total_z if total_z > 0 else 0.0  #计算累计偏差强度占比--贡献率
+    top_df['cum_contrib_ratio']=top_df['cum_z']/total_z if total_z > 0 else 0.0  #计算累计偏差强度占比--贡献率
     return top_df[[group_col, "sample", "positive", "negative", "p", "z", "cum_z", "cum_contrib_ratio"]] 
 #绘制前k个实体的贡献率曲线图
 def plot_topk_cumulative_curve(top_df:pd.DataFrame, group_name:str,output_png:pathlib.Path):
     plt.figure(figsize=(10, 6))
-    x=np.arrange(1,len(top_df)+1) #x轴为前k个实体的排名
+    x=np.arange(1,len(top_df)+1) #x轴为前k个实体的排名
     y=top_df['cum_contrib_ratio'] #y轴为累计贡献率
-    plt.set_xticks(x) #设置x轴刻度为整数
-    plt.set_ylim(0,1.05)#设置y轴范围为0-1.05
+    # use plt.xticks to set tick values
+    plt.xticks(x, rotation=45) #设置x轴刻度为整数并旋转标签
+    plt.ylim(0,1.05)#设置y轴范围为0-1.05
     plt.plot(x, y, marker='o') #折线图
-    plt.xticks(rotation=45)
     plt.title(f"Top {len(top_df)} Entities: Cumulative z Contribution")
     plt.xlabel(f" {group_name} Top-k shortcut entities")
     plt.ylabel("Cumulative Contribution Ratio")
@@ -227,7 +229,7 @@ def save_group_analysis(
 
     # 保存结果
     group_stats.to_csv(stats_csv, index=False)  # 保存详细统计
-    plot_histograms(group_stats, prefix.capitalize(), hist_png)  # 绘制直方图
+    plot_histograms(group_stats, group_stats, hist_png)  # 绘制偏差统计的直方图（p 和 z 分布）
     plot_permutation_distribution(  # 绘制置换检验图
         perm_values,
         perm_summary["observed_Zw"],
@@ -317,7 +319,7 @@ def main():
           f"p-value: {drug_summary['p_value']:.6f}") 
     print("-" * 80)
     print(f"Summary saved to: {summary_json}") 
-    print(f"Combined histogram saved to: {combined_png}") 
+    print(f"Combined histogram saved to: {combined_png}")  
     print("=" * 80)
 
 
