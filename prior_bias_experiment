@@ -1,0 +1,158 @@
+import argparse
+import pathlib 
+import Path
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+#命令行解析器
+def parse_args():
+    #命令行参数解析器
+    parser = argparse.ArgumentParser(description="Analyse dataset prior bias at global/target/drug level")
+    #数据集名称参数
+    parser.add_argument('--data', required=True, type=str, 
+                        help='dataset name under ./datasets/')
+    #数据集划分方式参数
+    parser.add_argument('--split', default='random', type=str, help="split name under dataset directory",
+                        choices=['random', 'cold', 'cluster'])
+    #输出结果保存路径参数
+    parser.add_argument('--output_dir', default='results/prior_bias_analysis', type=str,help='directory to save the analysis results')
+    
+    return parser.parse_args()
+
+#自动收集当前split下所有的*_with_id.csv文件路径
+def collect_csv_files(dataset_dir:Path):
+    csv_files = sorted(dataset_dir.glob("*_with_id.csv")) #文件路径列表
+    if not csv_files:
+        raise FileNotFoundError(f"No *_with_id.csv files found in {dataset_dir}")   
+    return csv_files
+
+#从数据中提取pr 列名
+def pick_protein_column(df:pd.DataFrame):
+    for col in ["pr_id","target_id","Target","Protein"]:
+        if col in df.columns:
+            return col  
+    raise KeyError("cannot find protein column in the dataset, try:['pr_id','target_id','Target','Protein']")
+
+#从数据中提取drug_id(drug列名)
+def pick_drug_column(df:pd.DataFrame):
+    for col in ["drug_id","Drug","SMILES"]:
+        if col in df.columns:
+            return col  
+    raise KeyError("cannot find drug column in the dataset, try:['drug_id','Drug','SMILES']")
+
+
+#计算某侧分组维度(pr/drug) 统计信息
+def compute_group_metrics(df:pd.DataFrame,group_col:str,label_col:str):
+    
+    #全局样本量统计
+    N=len(df) #总样本数量
+    p_global=df[label_col].sum()/N #全局正样本比例
+    
+    
+    grouped=df.groupby(group_col)[label_col]  #按group_col分组
+    n=grouped.count() #每个组的样本数量
+    
+    #计算每个组的统计信息：正样本数量 负样本数量 正样本比例
+    positive=grouped.sum() #每个组的正样本数量
+    negative=n-positive #每个组的负样本数量
+    
+    #每个组的正样本比例
+    p=positive/n 
+    #计算偏差强度
+    z=(n*np.abs(p-p_global))/N
+    
+    result = pd.DataFrame({group_col:n.index, 
+                            "sample":n.value, 
+                            "positive":positive, 
+                            "negative":negative, 
+                            "p":p.value, "z":z.value})    
+    return result
+
+# 绘制 target 与 drug 的 p/Z 直方图
+def plot_histograms(target_df: pd.DataFrame, drug_df: pd.DataFrame, output_png: Path):
+    # 创建 2x2 子图画布
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+    # 绘制 target 的 p 分布
+    axes[0, 0].hist(target_df["p"], bins=30)
+    axes[0, 0].set_title("Target p distribution")
+    axes[0, 0].set_xlabel("p = positive / samples")
+    axes[0, 0].set_ylabel("count")
+
+    # 绘制 target 的 Z 分布
+    axes[0, 1].hist(target_df["Z"], bins=30)
+    axes[0, 1].set_title("Target Z distribution")
+    axes[0, 1].set_xlabel("Z = (n * |p - p_global|) / N")
+    axes[0, 1].set_ylabel("count")
+
+    # 绘制 drug 的 p 分布
+    axes[1, 0].hist(drug_df["p"], bins=30)
+    axes[1, 0].set_title("Drug p distribution")
+    axes[1, 0].set_xlabel("p = positive / samples")
+    axes[1, 0].set_ylabel("count")
+
+    # 绘制 drug 的 Z 分布
+    axes[1, 1].hist(drug_df["Z"], bins=30)
+    axes[1, 1].set_title("Drug Z distribution")
+    axes[1, 1].set_xlabel("Z = (n * |p - p_global|) / N")
+    axes[1, 1].set_ylabel("count")
+
+    # 自动调整子图间距避免标签重叠
+    plt.tight_layout()
+    # 保存图像到文件
+    fig.savefig(output_png, dpi=200)
+    # 释放图像资源
+    plt.close(fig)
+    
+def main():
+    args = parse_args()
+    # 构造数据目录路径：datasets/{data}/{split}
+    dataset_dir = Path("datasets") / args.data / args.split
+    # 若目录不存在则报错
+    if not dataset_dir.exists():
+        raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+    # 收集该目录下所有 with_id CSV 文件
+    csv_files = collect_csv_files(dataset_dir)
+    # 读取并合并所有 CSV（如 train/val/test，或 cluster 的 source/target）
+    dataframes = [pd.read_csv(f) for f in csv_files]
+    df = pd.concat(dataframes, ignore_index=True)
+    # 检查标签列是否存在
+    if "Y" not in df.columns:
+        raise KeyError("Label column 'Y' not found in dataset")
+    
+    # 标签转为数值并限制为 0/1（兼容部分脏值）
+    df["Y"] = pd.to_numeric(df["Y"], errors="coerce").fillna(0).astype(int)
+    df["Y"] = (df["Y"] > 0).astype(int)
+    
+    protein_col = pick_protein_column(df)
+    drug_col = pick_drug_column(df)
+    
+    protein_stats = compute_group_metrics(df, protein_col, "Y")
+    drug_stats = compute_group_metrics(df, drug_col, "Y")
+    p_global = df["Y"].mean()
+
+    # 构造输出目录：{output_dir}/{data}/{split}
+    out_dir = Path(args.output_dir) / args.data / args.split
+    # 递归创建输出目录
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # 保存 protein 统计表
+    protein_csv = out_dir / "protein_bias_stats.csv"
+    protein_stats.to_csv(protein_csv, index=False)
+    # 保存 drug 统计表
+    drug_csv = out_dir / "drug_bias_stats.csv"
+    drug_stats.to_csv(drug_csv, index=False)
+    # 绘制并保存分布直方图
+    hist_png = out_dir / "prior_bias_histograms.png"
+    plot_histograms(protein_stats, drug_stats, hist_png)
+    
+    # 在终端输出全局 prior 与核心结果路径
+    print(f"Loaded files: {[str(f) for f in csv_files]}")
+    print(f"Total samples N: {len(df)}")
+    print(f"Global prior p_global: {p_global:.6f}")
+    print(f"Protein stats saved to: {protein_csv}")
+    print(f"Drug stats saved to: {drug_csv}")
+    print(f"Histogram saved to: {hist_png}")
+    
+if __name__ == "__main__":
+    main()
