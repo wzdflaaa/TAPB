@@ -71,7 +71,11 @@ def main():
         aa_dict = C['aa'].to(device).to(dtype=torch.float32) # shape: (20, 1280) 20种氨基酸的平均向量，维度为1280
 
     # 摘除后门调整的 TAPB（不再依赖 confounder / backdoor 参数）
-    model = TAPB(model_configs=model_configs).to(device)
+    #model = TAPB(model_configs=model_configs).to(device)  baseline TAPB阶段
+    
+    model=TAPB (model_configs=model_configs,
+                cf_mode_drug=config.TRAIN.CF_MODE_DRUG,
+                cf_mode_protein=config.TRAIN.CF_MODE_PROTEIN).to(device)  # 增加反事实输入处理后的 TAPB
         
     protein_f = open(protein_path, 'rb')
     pr_f = pickle.load(protein_f)

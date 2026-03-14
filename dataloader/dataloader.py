@@ -25,6 +25,7 @@ class DTIDataset(Dataset):
         y = self.df.iloc[index]["Y"]
         return {
             'SMILES': SMILES,
+            'pr_id': pr_id, #增加返回pr_id 测试阶段可以计算target 统计prior相关性
             'Protein': Protein,
             'Protein_seq': pr_seq,
             'Y': y
@@ -146,9 +147,10 @@ def drop_tokens(batch, drop_prob=0.7, aa_avg_f=None,mutation_rate=0):
 def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, MLM=False,
                    mask_rate=0, target_random_deletion_ratio=0, mutation_rate=0):
     def collate_fn(batch_samples):
-        batch_Drug, batch_Protein, batch_seq, batch_label = [], [], [], []
+        batch_Drug, batch_PrID, batch_Protein, batch_seq, batch_label = [], [], [], [], []
         for sample in batch_samples:
             batch_Drug.append(sample['SMILES'])
+            batch_PrID.append(sample['PrID'])  #收集pr_id
             batch_Protein.append(sample['Protein'])
             batch_seq.append(sample['Protein_seq'])
             batch_label.append(sample['Y'])
@@ -172,6 +174,8 @@ def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, M
             'batch_inputs_drug_m': batch_inputs_drug_m,
             'masked_drug_labels': masked_drug_labels,
             'batch_inputs_pr': batch_pr,
-            'labels': batch_label
+            'labels': batch_label,
+            'smiles': batch_Drug, #增加返回原始 SMILES(Drug)
+            'pr_id': batch_PrID, #增加返回pr_id
         }
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)

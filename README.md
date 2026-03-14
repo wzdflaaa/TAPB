@@ -23,6 +23,7 @@ pandas~=2.2.3
 matplotlib=3.5.0
 omegaconf=2.3.0
 ```
+#pip install torch==2.2.1 numpy==1.23.0 scikit-learn==1.2.1 pandas==2.2.3 prettytble>=2.2.1 rdkit~=2024.3.3 transformers==4.38.2 tqdm~=4.66.2 matplotlib==3.5.0 comegaconf==2.3.0
 
 ## Datasets🐴
 
