@@ -69,6 +69,7 @@ class TAPB(nn.Module):
         
         
         
+        
     def encode_drug(self, input_drugs, freqs_cis):
         drug_id = input_drugs['input_ids']
         drug_padding_mask = ~input_drugs['attention_mask'].bool()
@@ -113,65 +114,72 @@ class TAPB(nn.Module):
         return torch.stack([neg_prob, pos_prob], dim=-1)    #返回一个包含负类和正类概率的张量，形状为[B, 2]    
     
     def get_debias_ce_weight(self):
-        #softplus 将实数映射到正数区间 避免出现负损失权重
-        return F.softplus(self.debias_ce_weight_logit) 
+        return F.softplus(self.debias_ce_weight)
+
+    
+
     
     def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,lambda_drug=0.0,lambda_protein=0.0):
             #factual输入 编码drug/protein
             # encode
-            drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
-            pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
-            # fusion
-            fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
-            sf=self._score_from_fusion(fusion_f)
+        drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
+        pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
+        # fusion
+        fusion_f, attn_map = self.fusion(drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
+        sf=self._score_from_fusion(fusion_f)
             
-            #反事实输入
-            #pr反事实分支
-            cf_pr_f = self._counterfactual_replace(pr_f, pr_mask, self.cf_mode_protein)
-            fusion_cf_pr, _ = self.fusion(drug_f, cf_pr_f, input_drugs['attention_mask'], pr_mask)
-            st = self._score_from_fusion(fusion_cf_pr)
-            #drug反事实分支
-            cf_drug_f = self._counterfactual_(drug_f, input_drugs['attention_mask'], self.cf_mode_drug)
-            fusion_cf_drug, _ = self.fusion(cf_drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
-            sd = self._score_from_fusion(fusion_cf_drug)
+        #反事实输入
+        #pr反事实分支
+        cf_pr_f = self._counterfactual_replace(pr_f, pr_mask, self.cf_mode_protein)
+        fusion_cf_pr, _ = self.fusion(drug_f, cf_pr_f, input_drugs['attention_mask'], pr_mask)
+        st = self._score_from_fusion(fusion_cf_pr)
+        #drug反事实分支
+        cf_drug_f = self._counterfactual_replace(drug_f, input_drugs['attention_mask'], self.cf_mode_drug)
+        fusion_cf_drug, _ = self.fusion(cf_drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
+        sd = self._score_from_fusion(fusion_cf_drug)
+        #去偏分数: S_debias=S_factual - λ_pr * S_cf_pr - λ_d * S_cf_drug
+        s_debias=sf - lambda_protein * st - lambda_drug * sd
             
-            #去偏分数: S_debias=S_factual - λ_pr * S_cf_pr - λ_d * S_cf_drug
-            s_debias=sf - lambda_protein * st - lambda_drug * sd
             
-            
-            # mlm
-            drug_mlm_logits = None
-            if masked_drugs is not None:
-                drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
-                drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
+        # mlm
+        drug_mlm_logits = None
+        if masked_drugs is not None:
+            drug_f_mlm = self.encode_drug(masked_drugs, self.precompute_freqs_cis)
+            drug_mlm_logits = self.MLMHead(drug_f_mlm).permute(0, 2, 1)
 
-            #baseline：直接对融合后的特征进行池化，并分类
-            factual_prob=self._score_to_prob(sf)
-            cf_drug_prob=self._score_to_prob(sd)
-            cf_protein_prob=self._score_to_prob(st)
-            debiased_prob=self._score_to_prob(s_debias)
+        #baseline：直接对融合后的特征进行池化，并分类
+        factual_prob=self._score_to_prob(sf)
+        cf_drug_prob=self._score_to_prob(sd)
+        cf_protein_prob=self._score_to_prob(st)
+        debiased_prob=self._score_to_prob(s_debias)
             
-            #返回统一输出 事实/反事实/去偏概率与原始分数
+        #返回统一输出 事实/反事实/去偏概率与原始分数
             
-            return {
-                'logits': s_debias, 
-                'factual_logits': sf,
-                'cf_drug_logits': sd,
-                'cf_protein_logits': st,
-                'debiased_logits': s_debias,
-                
-                'prob':{
-                    'factual':factual_prob,
-                    'cf_frug':cf_drug_prob,
-                    'cf_protein':cf_protein_prob,
-                    'debiased':debiased_prob
-                },
-                'scores' :{'factual':sf,'cf_drug': sd,'cf_protein': st, 'debiased': s_debias},
-                
-                'fusion_f': fusion_f,
-                'attn_map': attn_map,
-                'mlm_logits': drug_mlm_logits,
-            }
+        return {
+        'logits': s_debias,
+        'factual_logits': sf,
+        'cf_drug_logits': sd,
+        'cf_protein_logits': st,
+        'debiased_logits': s_debias,
+        'prob': {
+            'factual': factual_prob,
+            'cf_drug': cf_drug_prob,
+            'cf_protein': cf_protein_prob,
+            'debiased': debiased_prob,
+            },
+        'scores': {
+            'factual': sf,
+            'cf_drug': sd,
+            'cf_protein': st,
+            'debiased': s_debias,
+            },
+        'fusion_f': fusion_f,
+        'attn_map': attn_map,
+        'drug_mlm_logits': drug_mlm_logits,
+        }
+
+
+
     """confounder alignment module 和 backdoor adjustment 的实现
             已从模型中摘除，不再依赖 confounder / backdoor 参数
     def confounder_aligment_module(self, pr_f, ci):

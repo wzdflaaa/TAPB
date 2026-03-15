@@ -150,7 +150,7 @@ def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, M
         batch_Drug, batch_PrID, batch_Protein, batch_seq, batch_label = [], [], [], [], []
         for sample in batch_samples:
             batch_Drug.append(sample['SMILES'])
-            batch_PrID.append(sample['PrID'])  #收集pr_id
+            batch_PrID.append(sample['pr_id'])  #收集pr_id
             batch_Protein.append(sample['Protein'])
             batch_seq.append(sample['Protein_seq'])
             batch_label.append(sample['Y'])
@@ -176,6 +176,6 @@ def get_dataLoader(batch_size, dataset, drug_tokenizer,aa=None, shuffle=False, M
             'batch_inputs_pr': batch_pr,
             'labels': batch_label,
             'smiles': batch_Drug, #增加返回原始 SMILES(Drug)
-            'pr_id': batch_PrID, #增加返回pr_id
+            'pr_ids': batch_PrID, #增加返回pr_id
         }
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)

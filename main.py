@@ -76,7 +76,13 @@ def main():
     model=TAPB (model_configs=model_configs,
                 cf_mode_drug=config.TRAIN.CF_MODE_DRUG,
                 cf_mode_protein=config.TRAIN.CF_MODE_PROTEIN).to(device)  # 增加反事实输入处理后的 TAPB
-        
+    
+    opt=torch.optim.Adam(
+        model.parameters(),
+        lr=float(config.TRAIN.LR),
+        weight_decay=float(config.TRAIN.WEIGHT_DECAY)
+        )
+     
     protein_f = open(protein_path, 'rb')
     pr_f = pickle.load(protein_f)
     train_dataset = DTIDataset(df_train.index.values, df_train, pr_f)
@@ -87,21 +93,21 @@ def main():
     bz = config.TRAIN.BATCH_SIZE
     MLM = config.TRAIN.MLM
     train_dataloader = get_dataLoader(bz, train_dataset, drug_tokenizer, aa=aa_dict, shuffle=True, MLM=MLM,
-                                      mask_rate=config.TRAIN.MASK_PROBABILITY,
-                                      target_random_deletion_ratio=config.TRAIN.TARGET_RANDOM_DROP_RATIO,
-                                      mutation_rate=config.TRAIN.MUTAION)
+                        mask_rate=config.TRAIN.MASK_PROBABILITY,
+                        target_random_deletion_ratio=config.TRAIN.TARGET_RANDOM_DROP_RATIO,
+                        mutation_rate=config.TRAIN.MUTAION)
     val_dataloader = get_dataLoader(bz, val_dataset, drug_tokenizer)
     test_dataloader = get_dataLoader(bz, test_dataset, drug_tokenizer)
 
     trainer = Trainer(model, opt, device, train_dataloader, val_dataloader, test_dataloader, output_path, config)
-    result, best_epoch = trainer.train()
+    train_result, best_epoch = trainer.train()
 
 
     with open(os.path.join(output_path, "model_architecture.txt"), "w") as wf:
         wf.write(str(model))
     print()
 
-    return result, best_epoch
+    return train_result, best_epoch
 
 
 if __name__ == '__main__':

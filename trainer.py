@@ -54,8 +54,8 @@ class Trainer(object):
         self.train_lambda_drug=float(config.TRAIN.LAMBDA_DRUG)
         self.train_lambda_protein=float(config.TRAIN.LAMBDA_PROTEIN)
         #评估时最终使用系数__网格搜索覆盖
-        self.eval_lambda_drug_grid =self.train_lambda_drug
-        self.eval_lambda_protein_grid = self.train_lambda_protein
+        self.eval_lambda_drug =self.train_lambda_drug
+        self.eval_lambda_protein = self.train_lambda_protein
         #网格搜索
         self.enable_lambda_grid_search=bool(config.TRAIN.ENABLE_LAMBDA_GRID_SEARCH)
         self.lambda_drug_grid=list(config.TRAIN.LAMBDA_DRUG_GRID)
@@ -75,7 +75,7 @@ class Trainer(object):
             
             #auroc, auprc = self.test(dataloader="val")
             #验证集评估 -使用默认lambda
-            auroc, auprc = self.test(dataloader="val",model=self.model, lambda_drug=self.train_lambda_drug, lambda_protein=self.train_lambda_protein)
+            auroc, auprc = self.test(dataloader="val",model_ref=self.model,lambda_drug=self.train_lambda_drug, lambda_protein=self.train_lambda_protein)
             val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [auroc, auprc]))
             self.val_table.add_row(val_lst)
             
@@ -110,8 +110,8 @@ class Trainer(object):
             "thred_optim": thred_optim,
             "best_epoch": self.best_epoch,
             "F1": f1,
-            "best_lambda_drug": self.eval_lambda_drug_grid,
-            "best_lambda_protein": self.eval_lambda_protein_grid
+            "best_lambda_drug": self.eval_lambda_drug,
+            "best_lambda_protein": self.eval_lambda_protein
         })
         self.test_metrics.update(test_out[7])
         
@@ -142,14 +142,14 @@ class Trainer(object):
         #穷举搜索 以验证集AUROC来选
         for ld in self.lambda_drug_grid:
             for lp in self.lambda_protein_grid:
-                auroc, auprc = self.test(dataloader="val",model=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
+                auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
                 if np.isnan(auroc):
                     continue
                 if auroc>best_auroc:
                     best_auroc=auroc
                     best_pair=(float(ld),float(lp))
-        self.eval_lambda_drug_grid = best_pair[0]
-        self.eval_lambda_protein_grid = best_pair[1]
+        self.eval_lambda_drug = best_pair[0]
+        self.eval_lambda_protein = best_pair[1]
         print(f"[Lambda Grid Search] best_lambda_drug={self.eval_lambda_drug}, best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}")
         return 
     
@@ -170,11 +170,11 @@ class Trainer(object):
         test_prettytable_file = os.path.join(self.output_dir, "test_markdowntable.txt")
         train_prettytable_file = os.path.join(self.output_dir, "train_markdowntable.txt")
        
-        with open(os.path.join(self.output_dir,"valid_markdowntable.txt"),'w') as fp:  
+        with open(os.path.join(self.output_dir,"valid_markdowntable.txt"),'w',encoding='utf-8') as fp:  
             fp.write(self.val_table.get_string())
-        with open(os.path.join(self.output_dir, "test_markdowntable.txt"), 'w') as fp:
+        with open(os.path.join(self.output_dir, "test_markdowntable.txt"), 'w',encoding='utf-8') as fp:
             fp.write(self.test_table.get_string())
-        with open(os.path.join(self.output_dir, "train_markdowntable.txt"), 'w') as fp:
+        with open(os.path.join(self.output_dir, "train_markdowntable.txt"), 'w',encoding='utf-8') as fp:
             fp.write(self.train_table.get_string())
 
     def train_epoch(self):
@@ -197,7 +197,7 @@ class Trainer(object):
             drug_labels = batch['masked_drug_labels']
             
             kwargs={
-                'pr_mask': pr_mask,
+                #'pr_mask': pr_mask, 不用重传--报错1
                 #训练阶段三个分支同时走 训练使用默认lamnda
                 'lambda_drug': self.train_lambda_drug,
                 'lambda_protein': self.train_lambda_protein,
@@ -216,7 +216,7 @@ class Trainer(object):
                 loss = b_loss + mlm_loss"""
                 
             else:
-                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask)
+                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, **kwargs)
                 #loss = cross_entropy(output['logits'], labels)
 
             #损失规划
@@ -224,11 +224,11 @@ class Trainer(object):
             factual_loss = cross_entropy(output['factual_logits'], labels)
             #debiased 分支 CE (可学习权重)
             debias_ce_weight = self.model.get_debias_ce_weight() 
-            debias_loss = cross_entropy(output['debias_logits'], labels) 
+            debias_loss = cross_entropy(output['debiased_logits'], labels) 
             
             loss = factual_loss + debias_ce_weight * debias_loss
             
-            if drug_labels is not None:
+            if drug_labels is not None and output['drug_mlm_logits'] is not None:
                 mlm_loss = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'], drug_labels)
                 loss = loss + mlm_loss
             
@@ -245,14 +245,14 @@ class Trainer(object):
             return float('nan'),float('nan')
         return roc_auc_score(y_true,y_score),average_precision_score(y_true,y_score)
     def _group_prior_correlation(self,y_true,y_pred,group_ids):
-        stats={}
-        for g,y,p in zip(group_ids,y_true,y_pred,group_ids):
+        stats = {}
+        for g, y, p in zip(group_ids,y_true,y_pred):
             if g not in stats:
                 stats[g]={'y':[],'p':[]}
             stats[g]['y'].append(y)
             stats[g]['y'].append(p)
-        true_rates=[np.mean(v['y'] for v in stats.values())]
-        pred_means=[np.mean(v['p'] for v in stats.values())]
+        true_rates=[np.mean(v['y']) for v in stats.values()]
+        pred_means=[np.mean(v['p']) for v in stats.values()]
         
         if len(true_rates)<2 or np.std(true_rates)==0 or np.std(pred_means==0):
             return float('nan')
@@ -288,7 +288,8 @@ class Trainer(object):
             for step, batch in enumerate(loop):
                 labels = batch['labels']
                 input_proteins = batch['batch_inputs_pr']['input_ids'].to(self.device)
-                input_drugs = batch['batch_inputs_drug'].to(self.device)
+                #input_drugs = batch['batch_inputs_drug'].to(self.device)
+                input_drugs={k: v.to(self.device) for k,v in batch['batch_inputs_drug'].items()}
                 pr_mask = batch['batch_inputs_pr']['attention_mask'].to(self.device)
                 
                 """if dataloader == "val":
@@ -307,12 +308,12 @@ class Trainer(object):
                 y_label.extend(labels)
                 pr_ids.extend(batch['pr_ids'])
                 smiles_ids.extend(batch['smiles'])
-                preds['debiased'].extend(output['debiased_logits'][:, 1].tolist())
-                preds['factual'].extend(output['factual_logits'][:, 1].tolist())
-                preds['cf_drug'].extend(output['cf_drug_logits'][:, 1].tolist())
-                preds['cf_protein'].extend(output['cf_protein_logits'][:,1].tolist())
+                preds['debiased'].extend(output['prob']['debiased'][:, 1].tolist())
+                preds['factual'].extend(output['prob']['factual'][:, 1].tolist())
+                preds['cf_drug'].extend(output['prob']['cf_drug'][:, 1].tolist())
+                preds['cf_protein'].extend(output['prob']['cf_protein'][:,1].tolist())
                 
-        auroc,auprc=self._safe_suc(y_label,preds['debiased'])
+        auroc,auprc=self._safe_auc(y_label,preds['debiased'])
         
         
         if dataloader == "val":
