@@ -36,6 +36,7 @@ class Trainer(object):
         
         self.val_loss_epoch, self.val_auroc_epoch = [], []
         self.test_metrics = {}
+        self.test_predictions={}
         self.config = config
         self.output_dir = output_path
         
@@ -113,7 +114,6 @@ class Trainer(object):
             "best_lambda_drug": self.eval_lambda_drug,
             "best_lambda_protein": self.eval_lambda_protein
         })
-        self.test_metrics.update(test_out[7])
         
         #模型摘要输出--保留
         print('Test at Best Model of Epoch ' + str(self.best_epoch) + " with AUROC "
@@ -163,6 +163,8 @@ class Trainer(object):
             "config": self.config
         }
         torch.save(state, os.path.join(self.output_dir, f"result_metrics.pt"))
+        if self.test_prediction:
+            torch.save(self.test_predictions,os.path.join(self.output_dir,"test_precdictions.pt"))
         if self.config.TRAIN.SAVE_LAST_EPOCH:
             torch.save(self.model.state_dict(), os.path.join(self.output_dir, f"last_epoch.pth"))
         
@@ -218,6 +220,32 @@ class Trainer(object):
             else:
                 output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, **kwargs)
                 #loss = cross_entropy(output['logits'], labels)
+
+            # ===== Diagnostic checks =====
+            if step == 0:  # Only print on first batch
+                print("\n" + "="*80)
+                print(f"[EPOCH {self.current_epoch}] DIAGNOSTIC OUTPUT")
+                print("="*80)
+                print("labels unique:", labels.unique())
+                print("factual_logits shape:", output['factual_logits'].shape)
+                print("debiased_logits shape:", output['debiased_logits'].shape)
+                print("debiased prob range:",
+                      output['prob']['debiased'][:,1].min().item(),
+                      output['prob']['debiased'][:,1].max().item())
+                print("sf mean/std:", 
+                      output['factual_logits'].mean().item(), 
+                      output['factual_logits'].std().item())
+                print("sd mean/std:", 
+                      output['cf_drug_logits'].mean().item(), 
+                      output['cf_drug_logits'].std().item())
+                print("st mean/std:", 
+                      output['cf_protein_logits'].mean().item(), 
+                      output['cf_protein_logits'].std().item())
+                print("s_debias mean/std:", 
+                      output['debiased_logits'].mean().item(), 
+                      output['debiased_logits'].std().item())
+                print("="*80 + "\n")
+            # ===== End diagnostic checks =====
 
             #损失规划
             #factual 分支 CE (没有权重)
@@ -275,7 +303,7 @@ class Trainer(object):
         y_label= []
         pr_ids,smiles_ids=[],[]
         preds={'debiased':[],'factual':[],'cf_drug':[],'cf_protein':[]}
-        
+        logits={'debiased_logits':[],'factual_logits':[],'cf_drug_logits':[],'cf_protein_logits':[]}
         loop = tqdm(data_loader, colour='#f47983', file=sys.stdout)
         
         with torch.no_grad():
@@ -305,6 +333,7 @@ class Trainer(object):
                     lambda_protein=lambda_protein
                 )
                 
+                
                 y_label.extend(labels)
                 pr_ids.extend(batch['pr_ids'])
                 smiles_ids.extend(batch['smiles'])
@@ -312,7 +341,10 @@ class Trainer(object):
                 preds['factual'].extend(output['prob']['factual'][:, 1].tolist())
                 preds['cf_drug'].extend(output['prob']['cf_drug'][:, 1].tolist())
                 preds['cf_protein'].extend(output['prob']['cf_protein'][:,1].tolist())
-                
+                logits['debiased_logits'].extend(output['debiased_logits'].tolist())
+                logits['factual_logits'].extend(output['factual_logits'].tolist())
+                logits['cf_drug_logits'].extend(output['cf_drug_logits'].tolist())
+                logits['cf_protein_logits'].extend(output['cf_protein_logits'].tolist())
         auroc,auprc=self._safe_auc(y_label,preds['debiased'])
         
         
@@ -324,44 +356,32 @@ class Trainer(object):
         y_pred_bin=(np.array(preds['debiased']) >= optimal_threshold).astype(int)
         tn,fp,fn,tp=confusion_matrix(y_label,y_pred_bin).ravel()
         
-        #去偏分析相关指标
-        factual_auc = self._safe_auc(y_label, preds['factual'])
-        cf_drug_auc = self._safe_auc(y_label, preds['cf_drug'])
-        cf_protein_auc = self._safe_auc(y_label, preds['cf_protein'])
-        extra = {
-            'factual_auroc': factual_auc[0],
-            'factual_auprc': factual_auc[1],
-            'cf_drug_auroc': cf_drug_auc[0],
-            'cf_drug_auprc': cf_drug_auc[1],
-            'cf_protein_auroc': cf_protein_auc[0],
-            'cf_protein_auprc': cf_protein_auc[1],
-            'debias_effect_drug_auroc_gap': auroc - cf_drug_auc[0],
-            'debias_effect_protein_auroc_gap': auroc - cf_protein_auc[0],
-            'factual_pos_prob_mean': float(np.mean(preds['factual'])),
-            'factual_pos_prob_var': float(np.var(preds['factual'])),
-            'debiased_pos_prob_mean': float(np.mean(preds['debiased'])),
-            'debiased_pos_prob_var': float(np.var(preds['debiased'])),
-            'cf_drug_pos_prob_mean': float(np.mean(preds['cf_drug'])),
-            'cf_drug_pos_prob_var': float(np.var(preds['cf_drug'])),
-            'cf_protein_pos_prob_mean': float(np.mean(preds['cf_protein'])),
-            'cf_protein_pos_prob_var': float(np.var(preds['cf_protein'])),
-            'drug_prior_pred_corr': self._group_prior_correlation(y_label, preds['debiased'], smiles_ids),
-            'protein_prior_pred_corr': self._group_prior_correlation(y_label, preds['debiased'], pr_ids),
-            'learned_debias_ce_weight': float(model_ref.get_debias_ce_weight().detach().cpu()),
+        self.test_predictions={
+            'label': list(map(int, y_label)),
+            'factual_logits': logits['factual_logits'],
+            'cf_drug_logits': logits['cf_drug_logits'],
+            'cf_protein_logits': logits['cf_protein_logits'],
+            'debiased_logits': logits['debiased_logits'],
+            'pr_id': pr_ids,
+            'SMILES': smiles_ids
         }
         acc = accuracy_score(y_label, y_pred_bin)
         sensitivity = tp / (tp + fn)
         specificity = tn / (tn + fp)
         f1 = f1_score(y_label, y_pred_bin)
-        return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold, extra
+        return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold
 def binary_cross_entropy(n, labels):
     loss_fct = torch.nn.BCELoss()
     loss = loss_fct(n, labels.float())
     return loss
 
-def cross_entropy(preds, targets, reduction='none'):
-    preds = torch.log(preds.clamp_min(1e-2)) #辅助性修改
-    loss_f = nn.NLLLoss()
-    loss = loss_f(preds, targets.long())
+def cross_entropy(preds, targets, reduction='mean'):
+    """
+    preds: shape [B], raw logits
+    targets: shape [B], values in {0,1}
+    """
+    targets = targets.float()
+    loss_f = nn.BCEWithLogitsLoss(reduction=reduction)
+    loss = loss_f(preds.view(-1), targets.view(-1))
     return loss
 
