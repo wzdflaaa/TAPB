@@ -221,31 +221,7 @@ class Trainer(object):
                 output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, **kwargs)
                 #loss = cross_entropy(output['logits'], labels)
 
-            # ===== Diagnostic checks =====
-            if step == 0:  # Only print on first batch
-                print("\n" + "="*80)
-                print(f"[EPOCH {self.current_epoch}] DIAGNOSTIC OUTPUT")
-                print("="*80)
-                print("labels unique:", labels.unique())
-                print("factual_logits shape:", output['factual_logits'].shape)
-                print("debiased_logits shape:", output['debiased_logits'].shape)
-                print("debiased prob range:",
-                      output['prob']['debiased'][:,1].min().item(),
-                      output['prob']['debiased'][:,1].max().item())
-                print("sf mean/std:", 
-                      output['factual_logits'].mean().item(), 
-                      output['factual_logits'].std().item())
-                print("sd mean/std:", 
-                      output['cf_drug_logits'].mean().item(), 
-                      output['cf_drug_logits'].std().item())
-                print("st mean/std:", 
-                      output['cf_protein_logits'].mean().item(), 
-                      output['cf_protein_logits'].std().item())
-                print("s_debias mean/std:", 
-                      output['debiased_logits'].mean().item(), 
-                      output['debiased_logits'].std().item())
-                print("="*80 + "\n")
-            # ===== End diagnostic checks =====
+            
 
             #损失规划
             #factual 分支 CE (没有权重)
