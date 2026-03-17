@@ -34,7 +34,7 @@ def main():
     config = OmegaConf.merge(train_config, model_config)
     model_configs = dict(model_config)
     set_seed(seed=config.TRAIN.SEED)
-    output_path = f"./results/{args.data}/{args.split}/{config.TRAIN.OUTPUT_DIR}{config.TRAIN.SEED}"
+    output_path = f"./results/{args.data}/{args.split}/{config.TRAIN.OUTPUT_DIR}{config.TRAIN.SEED}/{config.TRAIN.MODE}"
     mkdir(output_path)
     dataFolder = f'./datasets/{args.data}'
     dataFolder = os.path.join(dataFolder, str(args.split))

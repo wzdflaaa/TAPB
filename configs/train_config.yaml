@@ -16,7 +16,7 @@ TRAIN:
   SAVE_LAST_EPOCH : True
   OUTPUT_DIR : "seed_"
 
-
+  MODE : "mean"
   LAMBDA_DRUG : 0.5
   LAMBDA_PROTEIN : 0.5
   CF_MODE_DRUG : "mean"
