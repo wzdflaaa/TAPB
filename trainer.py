@@ -163,7 +163,7 @@ class Trainer(object):
             "config": self.config
         }
         torch.save(state, os.path.join(self.output_dir, f"result_metrics.pt"))
-        if self.test_prediction:
+        if self.test_predictions:
             torch.save(self.test_predictions,os.path.join(self.output_dir,"test_precdictions.pt"))
         if self.config.TRAIN.SAVE_LAST_EPOCH:
             torch.save(self.model.state_dict(), os.path.join(self.output_dir, f"last_epoch.pth"))
