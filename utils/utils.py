@@ -12,6 +12,15 @@ import random
 import numpy as np
 from omegaconf import OmegaConf
 
+
+#MUSA_GPU使用
+def get_runtime_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if hasattr(torch,"musa") and torch.musa.is_available():
+        return torch.device("musa:0")
+    return torch.device("cpu")
+
 def mkdir(path):
     # if it is the current folder, skip.
     if path == '':
@@ -23,7 +32,8 @@ def mkdir(path):
             raise
 
 def load_config_file(file_path):
-    with open(file_path, 'r') as fp:
+    #本地有中文路径 显示制定utf-8 编码
+    with open(file_path, 'r',encoding='utf-8') as fp:
         return OmegaConf.load(fp)
 
 def set_seed(seed=1000):

@@ -10,10 +10,10 @@ from dataloader.dataloader import DTIDataset, get_dataLoader
 from transformers import AutoTokenizer
 from models.tapb import TAPB
 from trainer import Trainer
-from utils.utils import set_seed, mkdir, load_config_file
+from utils.utils import set_seed, mkdir, load_config_file,get_runtime_device
 from preparation import generate_esm2_feature, kmeans_for_c
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = get_runtime_device
 parser = argparse.ArgumentParser(description="TAPB for DTI prediction")
 parser.add_argument('--data', required=True, type=str, metavar='TASK',
                     help='dataset')
