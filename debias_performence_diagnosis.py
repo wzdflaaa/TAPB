@@ -16,6 +16,8 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+
+
 REQUIRED_KEYS = {
     "label",
     "factual_logits",
@@ -30,10 +32,33 @@ REQUIRED_KEYS = {
 def parse_args():
     parser = argparse.ArgumentParser(description="Experiment 2: debias performance diagnosis")
     parser.add_argument("--pt", required=True, type=str, help="path to test_predictions.pt")
-    parser.add_argument("--train_csv", required=True, type=str, help="path to train csv")
-    parser.add_argument("--test_csv", required=True, type=str, help="path to test csv")
+    parser.add_argument("--train_csv", type=str, default=None, help="path to train csv")
+    parser.add_argument("--test_csv", type=str, default=None, help="path to test csv")
+    parser.add_argument("--data_dir", type=str, default=None, help="dataset split directory, e.g. datasets/bindingdb/cluster")
+    parser.add_argument("--split", type=str, default=None, choices=["random", "cold", "cluster", "augmented"], help="split name for auto csv resolution")
     parser.add_argument("--output_dir", required=True, type=str, help="output directory")
     return parser.parse_args()
+
+def resolve_csv_paths(args) -> Tuple[str, str]:
+    if args.train_csv and args.test_csv:
+        return args.train_csv, args.test_csv
+
+    if args.data_dir is None or args.split is None:
+        raise ValueError(
+            "Either provide both --train_csv/--test_csv, or provide --data_dir with --split."
+        )
+
+    if args.split == "cluster":
+        train_csv = os.path.join(args.data_dir, "source_train_with_id.csv")
+        test_csv = os.path.join(args.data_dir, "target_test_with_id.csv")
+    else:
+        train_csv = os.path.join(args.data_dir, "train_with_id.csv")
+        test_csv = os.path.join(args.data_dir, "test_with_id.csv")
+
+    for path in (train_csv, test_csv):
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"CSV file not found: {path}")
+    return train_csv, test_csv
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -130,8 +155,9 @@ def main():
     data = validate_and_load_pt(args.pt)
     torch.save(data, os.path.join(args.output_dir, "validated_test_predictions.pt"))
 
-    train_df = pd.read_csv(args.train_csv)
-    test_df = pd.read_csv(args.test_csv)
+    train_csv, test_csv = resolve_csv_paths(args)
+    train_df = pd.read_csv(train_csv)
+    test_df = pd.read_csv(test_csv)
 
     pred_df = pd.DataFrame(
         {
