@@ -137,8 +137,12 @@ class TAPB(nn.Module):
         cf_drug_f = self._counterfactual_replace(drug_f, input_drugs['attention_mask'], self.cf_mode_drug)
         fusion_cf_drug, _ = self.fusion(cf_drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
         sd = self._score_from_fusion(fusion_cf_drug)
-        #去偏分数: S_debias=S_factual - λ_pr * S_cf_pr - λ_d * S_cf_drug
-        s_debias=sf - lambda_protein * st - lambda_drug * sd
+        #去偏分数
+        s_debiased_drug_only = sf - lambda_drug * sd
+        s_debiased_protein_only = sf - lambda_protein * st
+        #去偏分数: S_debias=S_factual - λ_pr * S_cf_pr - λ_d * S_cf_drug            
+        s_debias = s_debiased_drug_only - lambda_protein * st
+
             
             
         # mlm
@@ -151,6 +155,8 @@ class TAPB(nn.Module):
         factual_prob=self._score_to_prob(sf)
         cf_drug_prob=self._score_to_prob(sd)
         cf_protein_prob=self._score_to_prob(st)
+        debiased_drug_only_prob = self._score_to_prob(s_debiased_drug_only)
+        debiased_protein_only_prob = self._score_to_prob(s_debiased_protein_only)
         debiased_prob=self._score_to_prob(s_debias)
             
         #返回统一输出 事实/反事实/去偏概率与原始分数
@@ -160,17 +166,23 @@ class TAPB(nn.Module):
         'factual_logits': sf,
         'cf_drug_logits': sd,
         'cf_protein_logits': st,
+        'debiased_drug_only_logits': s_debiased_drug_only,
+        'debiased_protein_only_logits': s_debiased_protein_only,
         'debiased_logits': s_debias,
         'prob': {
             'factual': factual_prob,
             'cf_drug': cf_drug_prob,
             'cf_protein': cf_protein_prob,
+            'debiased_drug_only': debiased_drug_only_prob,
+            'debiased_protein_only': debiased_protein_only_prob,
             'debiased': debiased_prob,
             },
         'scores': {
             'factual': sf,
             'cf_drug': sd,
             'cf_protein': st,
+            'debiased_drug_only': s_debiased_drug_only,
+            'debiased_protein_only': s_debiased_protein_only,
             'debiased': s_debias,
             },
         'fusion_f': fusion_f,

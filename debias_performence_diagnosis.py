@@ -15,12 +15,23 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+BRANCHES = [
+    "factual",
+    "cf_drug",
+    "cf_protein",
+    "debiased_drug_only",
+    "debiased_protein_only",
+    "debiased",
+]
+
 
 REQUIRED_KEYS = {
     "label",
     "factual_logits",
     "cf_drug_logits",
     "cf_protein_logits",
+    "debiased_drug_only_logits",
+    "debiased_protein_only_logits",
     "debiased_logits",
     "pr_id",
     "SMILES",
@@ -30,10 +41,33 @@ REQUIRED_KEYS = {
 def parse_args():
     parser = argparse.ArgumentParser(description="Experiment 2: debias performance diagnosis")
     parser.add_argument("--pt", required=True, type=str, help="path to test_predictions.pt")
-    parser.add_argument("--train_csv", required=True, type=str, help="path to train csv")
-    parser.add_argument("--test_csv", required=True, type=str, help="path to test csv")
+    parser.add_argument("--train_csv", type=str, default=None, help="path to train csv")
+    parser.add_argument("--test_csv", type=str, default=None, help="path to test csv")
+    parser.add_argument("--data_dir", type=str, default=None, help="dataset split directory, e.g. datasets/bindingdb/cluster")
+    parser.add_argument("--split", type=str, default=None, choices=["random", "cold", "cluster", "augmented"], help="split name for auto csv resolution")
     parser.add_argument("--output_dir", required=True, type=str, help="output directory")
     return parser.parse_args()
+
+def resolve_csv_paths(args) -> Tuple[str, str]:
+    if args.train_csv and args.test_csv:
+        return args.train_csv, args.test_csv
+
+    if args.data_dir is None or args.split is None:
+        raise ValueError(
+            "Either provide both --train_csv/--test_csv, or provide --data_dir with --split."
+        )
+
+    if args.split == "cluster":
+        train_csv = os.path.join(args.data_dir, "source_train_with_id.csv")
+        test_csv = os.path.join(args.data_dir, "target_test_with_id.csv")
+    else:
+        train_csv = os.path.join(args.data_dir, "train_with_id.csv")
+        test_csv = os.path.join(args.data_dir, "test_with_id.csv")
+
+    for path in (train_csv, test_csv):
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"CSV file not found: {path}")
+    return train_csv, test_csv
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -122,6 +156,58 @@ def _bias_reduction_ratio(c_factual: float, c_debiased: float) -> float:
         return float("nan")
     return float((abs(c_factual) - abs(c_debiased)) / abs(c_factual))
 
+def build_prediction_dataframe(data: Dict[str, list]) -> pd.DataFrame:
+    pred_df = pd.DataFrame(
+        {
+            "label": np.asarray(data["label"], dtype=int),
+            "pr_id": data["pr_id"],
+            "SMILES": data["SMILES"],
+        }
+    )
+    for branch in BRANCHES:
+        pred_df[branch] = sigmoid(np.asarray(data[f"{branch}_logits"], dtype=float))
+    return pred_df
+
+
+def build_gap_summary(main_metrics_df: pd.DataFrame) -> pd.DataFrame:
+    factual_row = main_metrics_df.loc[main_metrics_df["branch"] == "factual"].iloc[0]
+    rows = []
+    for branch in BRANCHES:
+        if branch == "factual":
+            continue
+        branch_row = main_metrics_df.loc[main_metrics_df["branch"] == branch].iloc[0]
+        rows.append(
+            {
+                "branch": branch,
+                "factual_auroc": float(factual_row["auroc"]),
+                "branch_auroc": float(branch_row["auroc"]),
+                "factual_minus_branch_auroc": float(factual_row["auroc"] - branch_row["auroc"]),
+                "factual_auprc": float(factual_row["auprc"]),
+                "branch_auprc": float(branch_row["auprc"]),
+                "factual_minus_branch_auprc": float(factual_row["auprc"] - branch_row["auprc"]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_correlation_summary(pr_merged: pd.DataFrame, drug_merged: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+    protein = {
+        f"corr_prior_{branch}": _corr(pr_merged["prior"].to_numpy(), pr_merged[branch].to_numpy())
+        for branch in BRANCHES
+    }
+    drug = {
+        f"corr_prior_{branch}": _corr(drug_merged["prior"].to_numpy(), drug_merged[branch].to_numpy())
+        for branch in BRANCHES
+    }
+    protein["BRR_debiased"] = _bias_reduction_ratio(protein["corr_prior_factual"], protein["corr_prior_debiased"])
+    protein["BRR_debiased_drug_only"] = _bias_reduction_ratio(protein["corr_prior_factual"], protein["corr_prior_debiased_drug_only"])
+    protein["BRR_debiased_protein_only"] = _bias_reduction_ratio(protein["corr_prior_factual"], protein["corr_prior_debiased_protein_only"])
+    protein["n_overlap_groups"] = int(len(pr_merged))
+    drug["BRR_debiased"] = _bias_reduction_ratio(drug["corr_prior_factual"], drug["corr_prior_debiased"])
+    drug["BRR_debiased_drug_only"] = _bias_reduction_ratio(drug["corr_prior_factual"], drug["corr_prior_debiased_drug_only"])
+    drug["BRR_debiased_protein_only"] = _bias_reduction_ratio(drug["corr_prior_factual"], drug["corr_prior_debiased_protein_only"])
+    drug["n_overlap_groups"] = int(len(drug_merged))
+    return {"protein": protein, "drug": drug}
 
 def main():
     args = parse_args()
@@ -130,29 +216,20 @@ def main():
     data = validate_and_load_pt(args.pt)
     torch.save(data, os.path.join(args.output_dir, "validated_test_predictions.pt"))
 
-    train_df = pd.read_csv(args.train_csv)
-    test_df = pd.read_csv(args.test_csv)
+    train_csv, test_csv = resolve_csv_paths(args)
+    train_df = pd.read_csv(train_csv)
+    test_df = pd.read_csv(test_csv)
 
-    pred_df = pd.DataFrame(
-        {
-            "label": np.asarray(data["label"], dtype=int),
-            "pr_id": data["pr_id"],
-            "SMILES": data["SMILES"],
-            "factual": sigmoid(np.asarray(data["factual_logits"], dtype=float)),
-            "cf_drug": sigmoid(np.asarray(data["cf_drug_logits"], dtype=float)),
-            "cf_protein": sigmoid(np.asarray(data["cf_protein_logits"], dtype=float)),
-            "debiased": sigmoid(np.asarray(data["debiased_logits"], dtype=float)),
-        }
-    )
+    pred_df=build_prediction_dataframe(data)
 
     if len(pred_df) != len(test_df):
         raise ValueError(f"Length mismatch between pred_df ({len(pred_df)}) and test_csv ({len(test_df)})")
 
     y = pred_df["label"].to_numpy()
-    branches = ["factual", "cf_drug", "cf_protein", "debiased"]
+    #branches = ["factual", "cf_drug", "cf_protein", "debiased"]
 
     main_metrics = []
-    for b in branches:
+    for b in BRANCHES:
         m = _main_metrics(y, pred_df[b].to_numpy())
         m["branch"] = b
         main_metrics.append(m)
@@ -162,29 +239,7 @@ def main():
     ]
     main_metrics_df.to_csv(os.path.join(args.output_dir, "main_branch_metrics.csv"), index=False)
 
-    factual_auroc = float(main_metrics_df.loc[main_metrics_df["branch"] == "factual", "auroc"].iloc[0])
-    cf_drug_auroc = float(main_metrics_df.loc[main_metrics_df["branch"] == "cf_drug", "auroc"].iloc[0])
-    cf_protein_auroc = float(main_metrics_df.loc[main_metrics_df["branch"] == "cf_protein", "auroc"].iloc[0])
-
-    factual_auprc = float(main_metrics_df.loc[main_metrics_df["branch"] == "factual", "auprc"].iloc[0])
-    cf_drug_auprc = float(main_metrics_df.loc[main_metrics_df["branch"] == "cf_drug", "auprc"].iloc[0])
-    cf_protein_auprc = float(main_metrics_df.loc[main_metrics_df["branch"] == "cf_protein", "auprc"].iloc[0])
-
-    counterfactual_gap_df = pd.DataFrame(
-        [
-            {
-                "factual_auroc": factual_auroc,
-                "cf_drug_auroc": cf_drug_auroc,
-                "cf_protein_auroc": cf_protein_auroc,
-                "factual_minus_cf_drug_auroc": factual_auroc - cf_drug_auroc,
-                "factual_minus_cf_protein_auroc": factual_auroc - cf_protein_auroc,
-                "AUROC_drop_cf_drug_proxy": factual_auroc - cf_drug_auroc,
-                "AUROC_drop_cf_protein_proxy": factual_auroc - cf_protein_auroc,
-                "AUPRC_drop_cf_drug_proxy": factual_auprc - cf_drug_auprc,
-                "AUPRC_drop_cf_protein_proxy": factual_auprc - cf_protein_auprc,
-            }
-        ]
-    )
+    counterfactual_gap_df = build_gap_summary(main_metrics_df)
     counterfactual_gap_df.to_csv(os.path.join(args.output_dir, "counterfactual_auroc_gaps.csv"), index=False)
 
     pr_col = _pick_col(train_df, ["pr_id", "target_id", "Target", "Protein"])
@@ -193,36 +248,13 @@ def main():
     protein_prior = _build_prior(train_df, pr_col).rename(columns={pr_col: "pr_id"})
     drug_prior = _build_prior(train_df, drug_col).rename(columns={drug_col: "SMILES"})
 
-    pr_group = pred_df.groupby("pr_id", as_index=False)[["factual", "cf_protein", "debiased"]].mean()
-    drug_group = pred_df.groupby("SMILES", as_index=False)[["factual", "cf_drug", "debiased"]].mean()
+    pr_group = pred_df.groupby("pr_id", as_index=False)[BRANCHES].mean()
+    drug_group = pred_df.groupby("SMILES", as_index=False)[BRANCHES].mean()
 
     pr_merged = protein_prior.merge(pr_group, on="pr_id", how="inner")
     drug_merged = drug_prior.merge(drug_group, on="SMILES", how="inner")
 
-    corr_prior_factual_protein = _corr(pr_merged["prior"].to_numpy(), pr_merged["factual"].to_numpy())
-    corr_prior_cf_protein = _corr(pr_merged["prior"].to_numpy(), pr_merged["cf_protein"].to_numpy())
-    corr_prior_debiased_protein = _corr(pr_merged["prior"].to_numpy(), pr_merged["debiased"].to_numpy())
-
-    corr_prior_factual_drug = _corr(drug_merged["prior"].to_numpy(), drug_merged["factual"].to_numpy())
-    corr_prior_cf_drug = _corr(drug_merged["prior"].to_numpy(), drug_merged["cf_drug"].to_numpy())
-    corr_prior_debiased_drug = _corr(drug_merged["prior"].to_numpy(), drug_merged["debiased"].to_numpy())
-
-    corr_summary = {
-        "protein": {
-            "corr_prior_factual": corr_prior_factual_protein,
-            "corr_prior_counterfactual": corr_prior_cf_protein,
-            "corr_prior_debiased": corr_prior_debiased_protein,
-            "BRR_target": _bias_reduction_ratio(corr_prior_factual_protein, corr_prior_debiased_protein),
-            "n_overlap_groups": int(len(pr_merged)),
-        },
-        "drug": {
-            "corr_prior_factual": corr_prior_factual_drug,
-            "corr_prior_counterfactual": corr_prior_cf_drug,
-            "corr_prior_debiased": corr_prior_debiased_drug,
-            "BRR_drug": _bias_reduction_ratio(corr_prior_factual_drug, corr_prior_debiased_drug),
-            "n_overlap_groups": int(len(drug_merged)),
-        },
-    }
+    corr_summary = build_correlation_summary(pr_merged, drug_merged)
 
     pd.DataFrame(
         [

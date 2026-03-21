@@ -278,8 +278,10 @@ class Trainer(object):
         
         y_label= []
         pr_ids,smiles_ids=[],[]
-        preds={'debiased':[],'factual':[],'cf_drug':[],'cf_protein':[]}
-        logits={'debiased_logits':[],'factual_logits':[],'cf_drug_logits':[],'cf_protein_logits':[]}
+        preds={'debiased':[],'factual':[],'cf_drug':[],'cf_protein':[],'debiased_drug_only': [],
+            'debiased_protein_only': [],}
+        logits={'debiased_logits':[],'factual_logits':[],'cf_drug_logits':[],'cf_protein_logits':[],'debiased_drug_only_logits': [],
+            'debiased_protein_only_logits': [],}
         loop = tqdm(data_loader, colour='#f47983', file=sys.stdout)
         
         with torch.no_grad():
@@ -317,10 +319,14 @@ class Trainer(object):
                 preds['factual'].extend(output['prob']['factual'][:, 1].tolist())
                 preds['cf_drug'].extend(output['prob']['cf_drug'][:, 1].tolist())
                 preds['cf_protein'].extend(output['prob']['cf_protein'][:,1].tolist())
+                preds['debiased_drug_only'].extend(output['prob']['debiased_drug_only'][:, 1].tolist())
+                preds['debiased_protein_only'].extend(output['prob']['debiased_protein_only'][:, 1].tolist())
                 logits['debiased_logits'].extend(output['debiased_logits'].tolist())
                 logits['factual_logits'].extend(output['factual_logits'].tolist())
                 logits['cf_drug_logits'].extend(output['cf_drug_logits'].tolist())
                 logits['cf_protein_logits'].extend(output['cf_protein_logits'].tolist())
+                logits['debiased_drug_only_logits'].extend(output['debiased_drug_only_logits'].tolist())
+                logits['debiased_protein_only_logits'].extend(output['debiased_protein_only_logits'].tolist())
         auroc,auprc=self._safe_auc(y_label,preds['debiased'])
         
         
@@ -337,6 +343,8 @@ class Trainer(object):
             'factual_logits': logits['factual_logits'],
             'cf_drug_logits': logits['cf_drug_logits'],
             'cf_protein_logits': logits['cf_protein_logits'],
+            'debiased_drug_only_logits': logits['debiased_drug_only_logits'],
+            'debiased_protein_only_logits': logits['debiased_protein_only_logits'],
             'debiased_logits': logits['debiased_logits'],
             'pr_id': pr_ids,
             'SMILES': smiles_ids
