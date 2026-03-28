@@ -60,12 +60,20 @@ class Trainer(object):
         
         self.eval_lambda_drug_only=self.train_lambda_drug
         self.eval_lambda_protein_only=self.train_lambda_protein
+        
         #网格搜索
         self.enable_lambda_grid_search=bool(config.TRAIN.ENABLE_LAMBDA_GRID_SEARCH)
         #单边去偏独立网格搜索
-        self.lambda_drug_grid=list(config.TRAIN.LAMBDA_DRUG_GRID)
-        self.lambda_protein_grid=list(config.TRAIN.LAMBDA_PROTEIN_GRID)
+        #self.lambda_drug_grid=list(config.TRAIN.LAMBDA_DRUG_GRID)
+        #self.lambda_protein_grid=list(config.TRAIN.LAMBDA_PROTEIN_GRID)
         
+        #两步搜索测试 ===== coarse-to-fine lambda search =====
+        # 默认先用 [-1, 1] 做粗搜索；
+        self.lambda_coarse_min = float(getattr(config.TRAIN, "LAMBDA_COARSE_MIN", -1.0))
+        self.lambda_coarse_max = float(getattr(config.TRAIN, "LAMBDA_COARSE_MAX", 1.0))
+        self.lambda_coarse_step = float(getattr(config.TRAIN, "LAMBDA_COARSE_STEP", 0.5))
+        self.lambda_fine_radius = float(getattr(config.TRAIN, "LAMBDA_FINE_RADIUS", 0.5))
+        self.lambda_fine_step = float(getattr(config.TRAIN, "LAMBDA_FINE_STEP", 0.1))
         
     def train(self):
         float2str = lambda x: '%0.4f' % x
@@ -136,72 +144,166 @@ class Trainer(object):
 
         return self.test_metrics, self.best_epoch
     
-    #网格搜索
-    def _select_best_lambdas(self):
-        #若关闭网格搜索 沿用训练默认值
-        if not self.enable_lambda_grid_search:
-            return
-        best_auroc=-1.0
-        best_pair=(self.train_lambda_drug,self.train_lambda_protein)
-        #穷举搜索 以验证集AUROC来选
-        for ld in self.lambda_drug_grid:
-            for lp in self.lambda_protein_grid:
-                branch_metrics=self.test(dataloader="val",model_ref=self.best_model,lambda_drug=float(ld),lambda_protein=float(lp),return_branch_metrics=True, )
-                auroc = branch_metrics["auroc"].get("debiased",float("nan"))
-                #auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
+        def _build_search_values(self, start, end, step):
+            vals = []
+            cur = float(start)
+            end = float(end)
+            step = float(step)
+            while cur <= end + 1e-8:
+                vals.append(round(cur, 10))
+                cur += step
+            return vals
+
+        def _build_local_values(self, center, radius, global_min, global_max, step):
+            start = max(global_min, center - radius)
+            end = min(global_max, center + radius)
+            return self._build_search_values(start, end, step)
+
+        def _eval_branch_metrics(self, lambda_drug, lambda_protein):
+            return self.test(
+                dataloader="val",
+                model_ref=self.best_model,
+                lambda_drug=float(lambda_drug),
+                lambda_protein=float(lambda_protein),
+                return_branch_metrics=True,
+            )
+
+        def _search_joint_grid(self, lambda_drug_values, lambda_protein_values, tag="joint"):
+            best_auroc = -1.0
+            best_pair = (self.train_lambda_drug, self.train_lambda_protein)
+            records = []
+
+            for ld in lambda_drug_values:
+                for lp in lambda_protein_values:
+                    branch_metrics = self._eval_branch_metrics(ld, lp)
+                    auroc = branch_metrics["auroc"].get("debiased", float("nan"))
+                    auprc = branch_metrics["auprc"].get("debiased", float("nan"))
+
+                    records.append({
+                        "tag": tag,
+                        "lambda_drug": float(ld),
+                        "lambda_protein": float(lp),
+                        "auroc": float(auroc) if not np.isnan(auroc) else float("nan"),
+                        "auprc": float(auprc) if not np.isnan(auprc) else float("nan"),
+                    })
+
+                    print(f"[{tag}] lambda_drug={ld:.2f}, lambda_protein={lp:.2f}, "
+                        f"val_auroc={auroc:.6f}, val_auprc={auprc:.6f}")
+
+                    if np.isnan(auroc):
+                        continue
+                    if auroc > best_auroc:
+                        best_auroc = auroc
+                        best_pair = (float(ld), float(lp))
+
+            return best_pair, best_auroc, records
+
+        def _search_single_grid(self, branch_name, candidate_values, fixed_other_lambda=0.0, tag="single"):
+            best_auroc = -1.0
+            best_lambda = None
+            records = []
+
+            for val in candidate_values:
+                if branch_name == "drug_only":
+                    branch_metrics = self._eval_branch_metrics(val, fixed_other_lambda)
+                    metric_key = "debiased_drug_only"
+                elif branch_name == "protein_only":
+                    branch_metrics = self._eval_branch_metrics(fixed_other_lambda, val)
+                    metric_key = "debiased_protein_only"
+                else:
+                    raise ValueError(f"Unsupported branch_name: {branch_name}")
+
+                auroc = branch_metrics["auroc"].get(metric_key, float("nan"))
+                auprc = branch_metrics["auprc"].get(metric_key, float("nan"))
+
+                records.append({
+                    "tag": tag,
+                    "branch": branch_name,
+                    "lambda": float(val),
+                    "auroc": float(auroc) if not np.isnan(auroc) else float("nan"),
+                    "auprc": float(auprc) if not np.isnan(auprc) else float("nan"),
+                })
+
+                print(f"[{tag}-{branch_name}] lambda={val:.2f}, "
+                    f"val_auroc={auroc:.6f}, val_auprc={auprc:.6f}")
+
                 if np.isnan(auroc):
                     continue
-                if auroc>best_auroc:
-                    best_auroc=auroc
-                    best_pair=(float(ld),float(lp))
-        self.eval_lambda_drug = best_pair[0]
-        self.eval_lambda_protein = best_pair[1]
+                if auroc > best_auroc:
+                    best_auroc = auroc
+                    best_lambda = float(val)
 
-        #对于单分支去偏_独立网格搜索--分别选最优lambda--共同训练
-        best_drug_only_auroc = -1.0
-        best_drug_only_lambda = self.train_lambda_drug
-        for ld in self.lambda_drug_grid:
-            branch_metrics = self.test(
-                dataloader="val",
-                model_ref=self.best_model,
-                lambda_drug=float(ld),
-                lambda_protein=self.train_lambda_protein,
-                return_branch_metrics=True,
+            if best_lambda is None:
+                best_lambda = self.train_lambda_drug if branch_name == "drug_only" else self.train_lambda_protein
+
+            return best_lambda, best_auroc, records
+    
+        #网格搜索
+        def _select_best_lambdas(self):
+            #若关闭网格搜索 沿用训练默认值
+            if not self.enable_lambda_grid_search:
+                return
+            best_auroc=-1.0
+            best_pair=(self.train_lambda_drug,self.train_lambda_protein)
+            #穷举搜索 以验证集AUROC来选
+            for ld in self.lambda_drug_grid:
+                for lp in self.lambda_protein_grid:
+                    branch_metrics=self.test(dataloader="val",model_ref=self.best_model,lambda_drug=float(ld),lambda_protein=float(lp),return_branch_metrics=True, )
+                    auroc = branch_metrics["auroc"].get("debiased",float("nan"))
+                    #auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
+                    if np.isnan(auroc):
+                        continue
+                    if auroc>best_auroc:
+                        best_auroc=auroc
+                        best_pair=(float(ld),float(lp))
+            self.eval_lambda_drug = best_pair[0]
+            self.eval_lambda_protein = best_pair[1]
+
+            #对于单分支去偏_独立网格搜索--分别选最优lambda--共同训练
+            best_drug_only_auroc = -1.0
+            best_drug_only_lambda = self.train_lambda_drug
+            for ld in self.lambda_drug_grid:
+                branch_metrics = self.test(
+                    dataloader="val",
+                    model_ref=self.best_model,
+                    lambda_drug=float(ld),
+                    lambda_protein=self.train_lambda_protein,
+                    return_branch_metrics=True,
+                )
+                auroc = branch_metrics["auroc"].get("debiased_drug_only", float("nan"))
+                if np.isnan(auroc):
+                    continue
+                if auroc > best_drug_only_auroc:
+                    best_drug_only_auroc = auroc
+                    best_drug_only_lambda = float(ld)
+            self.eval_lambda_drug_only = best_drug_only_lambda
+        
+            best_protein_only_auroc = -1.0
+            best_protein_only_lambda = self.train_lambda_protein
+            for lp in self.lambda_protein_grid:
+                branch_metrics = self.test(
+                    dataloader="val",
+                    model_ref=self.best_model,
+                    lambda_drug=self.train_lambda_drug,
+                    lambda_protein=float(lp),
+                    return_branch_metrics=True,
+                )
+                auroc = branch_metrics["auroc"].get("debiased_protein_only", float("nan"))
+                if np.isnan(auroc):
+                    continue
+                if auroc > best_protein_only_auroc:
+                    best_protein_only_auroc = auroc
+                    best_protein_only_lambda = float(lp)
+            self.eval_lambda_protein_only = best_protein_only_lambda
+        
+            print(
+                f"[Lambda Grid Search] joint(best_lambda_drug={self.eval_lambda_drug}, "
+                f"best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}); "
+                f"drug_only(best_lambda_drug_only={self.eval_lambda_drug_only}, val_auroc={best_drug_only_auroc:.6f}); "
+                f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, val_auroc={best_protein_only_auroc:.6f})"
             )
-            auroc = branch_metrics["auroc"].get("debiased_drug_only", float("nan"))
-            if np.isnan(auroc):
-                continue
-            if auroc > best_drug_only_auroc:
-                best_drug_only_auroc = auroc
-                best_drug_only_lambda = float(ld)
-        self.eval_lambda_drug_only = best_drug_only_lambda
         
-        best_protein_only_auroc = -1.0
-        best_protein_only_lambda = self.train_lambda_protein
-        for lp in self.lambda_protein_grid:
-            branch_metrics = self.test(
-                dataloader="val",
-                model_ref=self.best_model,
-                lambda_drug=self.train_lambda_drug,
-                lambda_protein=float(lp),
-                return_branch_metrics=True,
-            )
-            auroc = branch_metrics["auroc"].get("debiased_protein_only", float("nan"))
-            if np.isnan(auroc):
-                continue
-            if auroc > best_protein_only_auroc:
-                best_protein_only_auroc = auroc
-                best_protein_only_lambda = float(lp)
-        self.eval_lambda_protein_only = best_protein_only_lambda
-        
-        print(
-            f"[Lambda Grid Search] joint(best_lambda_drug={self.eval_lambda_drug}, "
-            f"best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}); "
-            f"drug_only(best_lambda_drug_only={self.eval_lambda_drug_only}, val_auroc={best_drug_only_auroc:.6f}); "
-            f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, val_auroc={best_protein_only_auroc:.6f})"
-        )
-        
-        return 
+            return 
     
     def save_result(self):
         if self.config.TRAIN.SAVE_MODEL:
