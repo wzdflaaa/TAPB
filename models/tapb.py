@@ -122,6 +122,10 @@ class TAPB(nn.Module):
     def forward(self, input_drugs, input_proteins, pr_mask=None, masked_drugs=None,lambda_drug=0.0,lambda_protein=0.0):
             #factual输入 编码drug/protein
             # encode
+            
+        if pr_mask is None:
+            raise ValueError("pr_mask must not be None")
+        
         drug_f = self.encode_drug(input_drugs, self.precompute_freqs_cis)
         pr_f, pr_mask = self.encode_protein(input_proteins, pr_mask)
         # fusion
@@ -137,11 +141,11 @@ class TAPB(nn.Module):
         cf_drug_f = self._counterfactual_replace(drug_f, input_drugs['attention_mask'], self.cf_mode_drug)
         fusion_cf_drug, _ = self.fusion(cf_drug_f, pr_f, input_drugs['attention_mask'], pr_mask)
         sd = self._score_from_fusion(fusion_cf_drug)
-        #去偏分数
+        #去偏分数_单分支去偏
         s_debiased_drug_only = sf - lambda_drug * sd
         s_debiased_protein_only = sf - lambda_protein * st
         #去偏分数: S_debias=S_factual - λ_pr * S_cf_pr - λ_d * S_cf_drug            
-        s_debias = s_debiased_drug_only - lambda_protein * st
+        s_debias = sf - lambda_drug * sd - lambda_protein * st
 
             
             

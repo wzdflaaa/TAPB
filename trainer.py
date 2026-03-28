@@ -57,8 +57,12 @@ class Trainer(object):
         #评估时最终使用系数__网格搜索覆盖
         self.eval_lambda_drug =self.train_lambda_drug
         self.eval_lambda_protein = self.train_lambda_protein
+        
+        self.eval_lambda_drug_only=self.train_lambda_drug
+        self.eval_lambda_protein_only=self.train_lambda_protein
         #网格搜索
         self.enable_lambda_grid_search=bool(config.TRAIN.ENABLE_LAMBDA_GRID_SEARCH)
+        #单边去偏独立网格搜索
         self.lambda_drug_grid=list(config.TRAIN.LAMBDA_DRUG_GRID)
         self.lambda_protein_grid=list(config.TRAIN.LAMBDA_PROTEIN_GRID)
         
@@ -142,7 +146,9 @@ class Trainer(object):
         #穷举搜索 以验证集AUROC来选
         for ld in self.lambda_drug_grid:
             for lp in self.lambda_protein_grid:
-                auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
+                branch_metrics=self.test(dataloader="val",model_ref=self.best_model,lambda_drug=float(ld),lambda_protein=float(lp),return_branch_metrics=True, )
+                auroc = branch_metrics["auroc"].get("debiased",float("nan"))
+                #auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
                 if np.isnan(auroc):
                     continue
                 if auroc>best_auroc:
@@ -150,7 +156,51 @@ class Trainer(object):
                     best_pair=(float(ld),float(lp))
         self.eval_lambda_drug = best_pair[0]
         self.eval_lambda_protein = best_pair[1]
-        print(f"[Lambda Grid Search] best_lambda_drug={self.eval_lambda_drug}, best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}")
+
+        #对于单分支去偏_独立网格搜索--分别选最优lambda--共同训练
+        best_drug_only_auroc = -1.0
+        best_drug_only_lambda = self.train_lambda_drug
+        for ld in self.lambda_drug_grid:
+            branch_metrics = self.test(
+                dataloader="val",
+                model_ref=self.best_model,
+                lambda_drug=float(ld),
+                lambda_protein=self.train_lambda_protein,
+                return_branch_metrics=True,
+            )
+            auroc = branch_metrics["auroc"].get("debiased_drug_only", float("nan"))
+            if np.isnan(auroc):
+                continue
+            if auroc > best_drug_only_auroc:
+                best_drug_only_auroc = auroc
+                best_drug_only_lambda = float(ld)
+        self.eval_lambda_drug_only = best_drug_only_lambda
+        
+        best_protein_only_auroc = -1.0
+        best_protein_only_lambda = self.train_lambda_protein
+        for lp in self.lambda_protein_grid:
+            branch_metrics = self.test(
+                dataloader="val",
+                model_ref=self.best_model,
+                lambda_drug=self.train_lambda_drug,
+                lambda_protein=float(lp),
+                return_branch_metrics=True,
+            )
+            auroc = branch_metrics["auroc"].get("debiased_protein_only", float("nan"))
+            if np.isnan(auroc):
+                continue
+            if auroc > best_protein_only_auroc:
+                best_protein_only_auroc = auroc
+                best_protein_only_lambda = float(lp)
+        self.eval_lambda_protein_only = best_protein_only_lambda
+        
+        print(
+            f"[Lambda Grid Search] joint(best_lambda_drug={self.eval_lambda_drug}, "
+            f"best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}); "
+            f"drug_only(best_lambda_drug_only={self.eval_lambda_drug_only}, val_auroc={best_drug_only_auroc:.6f}); "
+            f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, val_auroc={best_protein_only_auroc:.6f})"
+        )
+        
         return 
     
     def save_result(self):
@@ -254,16 +304,16 @@ class Trainer(object):
             if g not in stats:
                 stats[g]={'y':[],'p':[]}
             stats[g]['y'].append(y)
-            stats[g]['y'].append(p)
+            stats[g]['p'].append(p)
         true_rates=[np.mean(v['y']) for v in stats.values()]
         pred_means=[np.mean(v['p']) for v in stats.values()]
         
-        if len(true_rates)<2 or np.std(true_rates)==0 or np.std(pred_means==0):
+        if len(true_rates)<2 or np.std(true_rates)==0 or np.std(pred_means)==0 :
             return float('nan')
         return float(np.corrcoef(true_rates,pred_means)[0,1])
                     
     
-    def test(self, dataloader="test",model_ref=None,lambda_drug=None,lambda_protein=None):
+    def test(self, dataloader="test",model_ref=None,lambda_drug=None,lambda_protein=None,return_branch_metrics=False):
         
         if dataloader == "test":
             data_loader = self.test_dataloader
@@ -327,11 +377,18 @@ class Trainer(object):
                 logits['cf_protein_logits'].extend(output['cf_protein_logits'].tolist())
                 logits['debiased_drug_only_logits'].extend(output['debiased_drug_only_logits'].tolist())
                 logits['debiased_protein_only_logits'].extend(output['debiased_protein_only_logits'].tolist())
-        auroc,auprc=self._safe_auc(y_label,preds['debiased'])
         
-        
+        branch_auc = {k: self._safe_auc(y_label, v) for k, v in preds.items()}
+        auroc, auprc = branch_auc['debiased']
+
+        if dataloader == "val" and return_branch_metrics:
+            return {
+                'auroc': {k: float(v[0]) for k, v in branch_auc.items()},
+                'auprc': {k: float(v[1]) for k, v in branch_auc.items()},
+            }
         if dataloader == "val":
             return auroc, auprc
+    
         fpr,tpr,thresholds=roc_curve(y_label,preds['debiased'])
         optimal_idx=np.argmax(tpr-fpr)
         optimal_threshold=thresholds[optimal_idx]
@@ -347,25 +404,24 @@ class Trainer(object):
             'debiased_protein_only_logits': logits['debiased_protein_only_logits'],
             'debiased_logits': logits['debiased_logits'],
             'pr_id': pr_ids,
-            'SMILES': smiles_ids
+            'SMILES': smiles_ids,
         }
         acc = accuracy_score(y_label, y_pred_bin)
         sensitivity = tp / (tp + fn)
         specificity = tn / (tn + fp)
         f1 = f1_score(y_label, y_pred_bin)
         return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold
-def binary_cross_entropy(n, labels):
-    loss_fct = torch.nn.BCELoss()
-    loss = loss_fct(n, labels.float())
-    return loss
+    def binary_cross_entropy(n, labels):
+        loss_fct = torch.nn.BCELoss()
+        loss = loss_fct(n, labels.float())
+        return loss
 
-def cross_entropy(preds, targets, reduction='mean'):
-    """
-    preds: shape [B], raw logits
-    targets: shape [B], values in {0,1}
-    """
-    targets = targets.float()
-    loss_f = nn.BCEWithLogitsLoss(reduction=reduction)
-    loss = loss_f(preds.view(-1), targets.view(-1))
-    return loss
+    def cross_entropy(preds, targets, reduction='mean'):
+        """ preds: shape [B], raw logits
+            targets: shape [B], values in {0,1}
+        """
+        targets = targets.float()
+        loss_f = nn.BCEWithLogitsLoss(reduction=reduction)
+        loss = loss_f(preds.view(-1), targets.view(-1))
+        return loss
 
