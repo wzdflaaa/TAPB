@@ -411,17 +411,15 @@ class Trainer(object):
         specificity = tn / (tn + fp)
         f1 = f1_score(y_label, y_pred_bin)
         return auroc, auprc, f1, sensitivity, specificity, acc, optimal_threshold
-    def binary_cross_entropy(n, labels):
-        loss_fct = torch.nn.BCELoss()
-        loss = loss_fct(n, labels.float())
-        return loss
 
-    def cross_entropy(preds, targets, reduction='mean'):
-        """ preds: shape [B], raw logits
-            targets: shape [B], values in {0,1}
-        """
-        targets = targets.float()
-        loss_f = nn.BCEWithLogitsLoss(reduction=reduction)
-        loss = loss_f(preds.view(-1), targets.view(-1))
-        return loss
+def binary_cross_entropy(n, labels):
+    loss_fct = torch.nn.BCELoss()
+    loss = loss_fct(n, labels.float())
+    return loss
 
+def cross_entropy(preds, targets, reduction='mean'):
+    #preds: shape [B], raw logitstargets: shape [B], values in {0,1}
+    targets = targets.float()
+    loss_f = nn.BCEWithLogitsLoss(reduction=reduction)
+    loss = loss_f(preds.view(-1), targets.view(-1))
+    return loss
