@@ -43,8 +43,7 @@ class Trainer(object):
         valid_metric_header = ["# Epoch", "AUROC", "AUPRC"]
         self.val_table = PrettyTable(valid_metric_header)
         
-        test_metric_header = ["# Best Epoch", "AUROC", "AUPRC", "F1", "Sensitivity", "Specificity", "Accuracy",
-                              "Threshold"]
+        test_metric_header = ["# Best Epoch", "AUROC", "AUPRC", "F1", "Sensitivity", "Specificity", "Accuracy","Threshold"]
         self.test_table = PrettyTable(test_metric_header)
         
         train_metric_header = ["# Epoch", "Train_loss"]
@@ -113,7 +112,7 @@ class Trainer(object):
         test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [auroc, auprc, f1, sensitivity, specificity,
                                                                             accuracy, thred_optim]))
         self.test_table.add_row(test_lst)
-       
+        
         self.test_metrics.update({
             "auroc": auroc,
             "auprc": auprc,
@@ -124,8 +123,7 @@ class Trainer(object):
             "best_epoch": self.best_epoch,
             "F1": f1,
             "best_lambda_drug": self.eval_lambda_drug,
-            "best_lambda_protein": self.eval_lambda_protein
-        })
+            "best_lambda_protein": self.eval_lambda_protein,})
         
         #模型摘要输出--保留
         print('Test at Best Model of Epoch ' + str(self.best_epoch) + " with AUROC "
@@ -192,7 +190,7 @@ class Trainer(object):
                 if auroc > best_auroc:
                     best_auroc = auroc
                     best_pair = (float(ld), float(lp))
-                return best_pair, best_auroc, records
+        return best_pair, best_auroc, records
 
     def _search_single_grid(self, branch_name, candidate_values, fixed_other_lambda=0.0, tag="single"):
         best_auroc = -1.0
@@ -235,69 +233,136 @@ class Trainer(object):
         return best_lambda, best_auroc, records
     #网格搜索
     def _select_best_lambdas(self):
-        #若关闭网格搜索 沿用训练默认值
         if not self.enable_lambda_grid_search:
             return
-        best_auroc=-1.0
-        best_pair=(self.train_lambda_drug,self.train_lambda_protein)
-        #穷举搜索 以验证集AUROC来选
-        for ld in self.lambda_drug_grid:
-            for lp in self.lambda_protein_grid:
-                branch_metrics=self.test(dataloader="val",model_ref=self.best_model,lambda_drug=float(ld),lambda_protein=float(lp),return_branch_metrics=True, )
-                auroc = branch_metrics["auroc"].get("debiased",float("nan"))
-                #auroc, auprc = self.test(dataloader="val",model_ref=self.best_model, lambda_drug=float(ld), lambda_protein=float(lp))
-                if np.isnan(auroc):
-                    continue
-                if auroc>best_auroc:
-                    best_auroc=auroc
-                    best_pair=(float(ld),float(lp))
-        self.eval_lambda_drug = best_pair[0]
-        self.eval_lambda_protein = best_pair[1]
 
-        #对于单分支去偏_独立网格搜索--分别选最优lambda--共同训练
-        best_drug_only_auroc = -1.0
-        best_drug_only_lambda = self.train_lambda_drug
-        for ld in self.lambda_drug_grid:
-            branch_metrics = self.test(
-                dataloader="val",
-                model_ref=self.best_model,
-                lambda_drug=float(ld),
-                lambda_protein=self.train_lambda_protein,
-                return_branch_metrics=True,
-            )
-            auroc = branch_metrics["auroc"].get("debiased_drug_only", float("nan"))
-            if np.isnan(auroc):
-                continue
-            if auroc > best_drug_only_auroc:
-                best_drug_only_auroc = auroc
-                best_drug_only_lambda = float(ld)
-        self.eval_lambda_drug_only = best_drug_only_lambda
-        
-        best_protein_only_auroc = -1.0
-        best_protein_only_lambda = self.train_lambda_protein
-        for lp in self.lambda_protein_grid:
-            branch_metrics = self.test(
-                dataloader="val",
-                model_ref=self.best_model,
-                lambda_drug=self.train_lambda_drug,
-                lambda_protein=float(lp),
-                return_branch_metrics=True,
-                )
-            auroc = branch_metrics["auroc"].get("debiased_protein_only", float("nan"))
-            if np.isnan(auroc):
-                continue
-            if auroc > best_protein_only_auroc:
-                best_protein_only_auroc = auroc
-                best_protein_only_lambda = float(lp)
-        self.eval_lambda_protein_only = best_protein_only_lambda
-        
-        print(
-            f"[Lambda Grid Search] joint(best_lambda_drug={self.eval_lambda_drug}, "
-            f"best_lambda_protein={self.eval_lambda_protein}, val_auroc={best_auroc:.6f}); "
-            f"drug_only(best_lambda_drug_only={self.eval_lambda_drug_only}, val_auroc={best_drug_only_auroc:.6f}); "
-            f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, val_auroc={best_protein_only_auroc:.6f})"
+        coarse_min = self.lambda_coarse_min
+        coarse_max = self.lambda_coarse_max
+        coarse_step = self.lambda_coarse_step
+        fine_radius = self.lambda_fine_radius
+        fine_step = self.lambda_fine_step
+
+        all_records = {
+            "joint_coarse": [],
+            "joint_fine": [],
+            "drug_only_coarse": [],
+            "drug_only_fine": [],
+            "protein_only_coarse": [],
+            "protein_only_fine": [],
+        }
+
+        # 1) joint coarse
+        coarse_ld_values = self._build_search_values(coarse_min, coarse_max, coarse_step)
+        coarse_lp_values = self._build_search_values(coarse_min, coarse_max, coarse_step)
+
+        best_pair_coarse, best_joint_auroc_coarse, joint_coarse_records = self._search_joint_grid(
+            coarse_ld_values,
+            coarse_lp_values,
+            tag="joint-coarse"
         )
-        return 
+        all_records["joint_coarse"] = joint_coarse_records
+
+        # 2) joint fine
+        fine_ld_values = self._build_local_values(
+            center=best_pair_coarse[0],
+            radius=fine_radius,
+            global_min=coarse_min,
+            global_max=coarse_max,
+            step=fine_step
+        )
+        fine_lp_values = self._build_local_values(
+            center=best_pair_coarse[1],
+            radius=fine_radius,
+            global_min=coarse_min,
+            global_max=coarse_max,
+            step=fine_step
+        )
+
+        best_pair_fine, best_joint_auroc_fine, joint_fine_records = self._search_joint_grid(
+            fine_ld_values,
+            fine_lp_values,
+            tag="joint-fine"
+        )
+        all_records["joint_fine"] = joint_fine_records
+
+        self.eval_lambda_drug = best_pair_fine[0]
+        self.eval_lambda_protein = best_pair_fine[1]
+
+        # 3) drug-only coarse + fine
+        best_drug_coarse, best_drug_auroc_coarse, drug_coarse_records = self._search_single_grid(
+            branch_name="drug_only",
+            candidate_values=coarse_ld_values,
+            fixed_other_lambda=0.0,
+            tag="drug-only-coarse"
+        )
+        all_records["drug_only_coarse"] = drug_coarse_records
+
+        fine_drug_values = self._build_local_values(
+            center=best_drug_coarse,
+            radius=fine_radius,
+            global_min=coarse_min,
+            global_max=coarse_max,
+            step=fine_step
+        )
+
+        best_drug_fine, best_drug_auroc_fine, drug_fine_records = self._search_single_grid(
+            branch_name="drug_only",
+            candidate_values=fine_drug_values,
+            fixed_other_lambda=0.0,
+            tag="drug-only-fine"
+        )
+        all_records["drug_only_fine"] = drug_fine_records
+        self.eval_lambda_drug_only = best_drug_fine
+
+        # 4) protein-only coarse + fine
+        best_protein_coarse, best_protein_auroc_coarse, protein_coarse_records = self._search_single_grid(
+            branch_name="protein_only",
+            candidate_values=coarse_lp_values,
+            fixed_other_lambda=0.0,
+            tag="protein-only-coarse"
+        )
+        all_records["protein_only_coarse"] = protein_coarse_records
+
+        fine_protein_values = self._build_local_values(
+            center=best_protein_coarse,
+            radius=fine_radius,
+            global_min=coarse_min,
+            global_max=coarse_max,
+            step=fine_step
+        )
+
+        best_protein_fine, best_protein_auroc_fine, protein_fine_records = self._search_single_grid(
+            branch_name="protein_only",
+            candidate_values=fine_protein_values,
+            fixed_other_lambda=0.0,
+            tag="protein-only-fine"
+        )
+        all_records["protein_only_fine"] = protein_fine_records
+        self.eval_lambda_protein_only = best_protein_fine
+
+        torch.save(all_records, os.path.join(self.output_dir, "lambda_search_records.pt"))
+
+        print(
+            f"[Lambda Coarse-to-Fine Search] "
+            f"joint(best_lambda_drug={self.eval_lambda_drug}, "
+            f"best_lambda_protein={self.eval_lambda_protein}, "
+            f"val_auroc={best_joint_auroc_fine:.6f}); "
+            f"drug_only(best_lambda_drug_only={self.eval_lambda_drug_only}, "
+            f"val_auroc={best_drug_auroc_fine:.6f}); "
+            f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, "
+            f"val_auroc={best_protein_auroc_fine:.6f})"
+        )
+
+        if (
+            abs(self.eval_lambda_drug - coarse_min) < 1e-8 or
+            abs(self.eval_lambda_drug - coarse_max) < 1e-8 or
+            abs(self.eval_lambda_protein - coarse_min) < 1e-8 or
+            abs(self.eval_lambda_protein - coarse_max) < 1e-8
+        ):
+            print(
+                "[Warning] joint best lambda is on the search boundary. "
+                "You may want to expand the coarse range."
+            )
     
     def save_result(self):
         if self.config.TRAIN.SAVE_MODEL:
