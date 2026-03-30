@@ -1,6 +1,6 @@
 TRAIN:
-  BATCH_SIZE : 10
-  MAX_EPOCH : 1
+  BATCH_SIZE : 60
+  MAX_EPOCH : 100
   SEED : 6
   LR : 2e-4
   WEIGHT_DECAY : 1e-4
@@ -15,6 +15,12 @@ TRAIN:
   SAVE_MODEL : True
   SAVE_LAST_EPOCH : True
   OUTPUT_DIR : "seed_"
+
+  CF_DRUG_LOSS_WEIGHT : 1.0
+  CF_PROTEIN_LOSS_WEIGHT : 1.0
+  MLM_LOSS_WEIGHT : 1.0
+  SELECT_BEST_EPOCH_BY : "factual"
+  
 
   MODE : "mean"
   LAMBDA_DRUG : 0.5

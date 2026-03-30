@@ -65,7 +65,7 @@ class TAPB(nn.Module):
         self.pr_linear = nn.Linear(model_configs['PrEncoder']['d_model'], d_model) #将预训练蛋白质特征投影到与药物编码器输出相同的维度
         
         #可学习的去偏 CE 损失权重参数
-        self.debias_ce_weight = nn.Parameter(torch.tensor(0.0))
+        #self.debias_ce_weight = nn.Parameter(torch.tensor(0.0))
         
         
         
@@ -113,8 +113,8 @@ class TAPB(nn.Module):
         neg_prob=1-pos_prob #负类概率
         return torch.stack([neg_prob, pos_prob], dim=-1)    #返回一个包含负类和正类概率的张量，形状为[B, 2]    
     
-    def get_debias_ce_weight(self):
-        return F.softplus(self.debias_ce_weight)
+    #def get_debias_ce_weight(self):
+    #    return F.softplus(self.debias_ce_weight)
 
     
 

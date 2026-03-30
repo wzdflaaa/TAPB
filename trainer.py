@@ -50,15 +50,24 @@ class Trainer(object):
         self.train_table = PrettyTable(train_metric_header)
 
         
-        #训练使用默认的反事实分支系数
+        #训练使用默认的反事实分支系数 仅推理/搜索使用 不参与训练loss
         self.train_lambda_drug=float(config.TRAIN.LAMBDA_DRUG)
         self.train_lambda_protein=float(config.TRAIN.LAMBDA_PROTEIN)
+        
         #评估时最终使用系数__网格搜索覆盖
         self.eval_lambda_drug =self.train_lambda_drug
         self.eval_lambda_protein = self.train_lambda_protein
         
         self.eval_lambda_drug_only=self.train_lambda_drug
         self.eval_lambda_protein_only=self.train_lambda_protein
+        
+        #分支loss权重
+        self.cf_drug_loss_weight = float(getattr(config.TRAIN,"CF_DRUG_LOSS_WEIGHT",0.3))
+        self.cf_protein_loss_weight= float(getattr(config.TRAIN,"CF_PROTEIN_LOSS_WEIGHT",0.3))
+        self.mlm_loss_weight=float(getattr(config.TRAIN,"MLM_LOSS_WEIGHT",0.3))
+        
+        #最佳epoch的选择依据：factual分支性能
+        self.select_best_epoch_by=str(getattr(config.TRAIN,"SELECT_BEST_EPOCH_BY","factual")).lower()
         
         #网格搜索
         self.enable_lambda_grid_search=bool(config.TRAIN.ENABLE_LAMBDA_GRID_SEARCH)
@@ -76,29 +85,42 @@ class Trainer(object):
         
     def train(self):
         float2str = lambda x: '%0.4f' % x
+
         for i in range(self.epochs):
             self.current_epoch += 1
             train_loss = self.train_epoch()
-            
+
             train_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [train_loss]))
             self.train_table.add_row(train_lst)
-            
             self.train_loss_epoch.append(train_loss)
-            
-            #auroc, auprc = self.test(dataloader="val")
-            #验证集评估 -使用默认lambda
-            auroc, auprc = self.test(dataloader="val",model_ref=self.model,lambda_drug=self.train_lambda_drug, lambda_protein=self.train_lambda_protein)
-            val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [auroc, auprc]))
+
+            # 这里不再用 debiased@默认lambda 选最佳epoch # 改为直接看 factual 分支的验证集表现
+            val_metrics = self.test(
+                dataloader="val",
+                model_ref=self.model,
+                lambda_drug=0.0,
+                lambda_protein=0.0,
+                return_branch_metrics=True,
+            )
+
+            factual_auroc = val_metrics["auroc"]["factual"]
+            factual_auprc = val_metrics["auprc"]["factual"]
+
+            val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [factual_auroc, factual_auprc]))
             self.val_table.add_row(val_lst)
-            
-            self.val_auroc_epoch.append(auroc)
-            if auroc >= self.best_auroc:
+            self.val_auroc_epoch.append(factual_auroc)
+
+            if factual_auroc >= self.best_auroc:
                 self.best_model = copy.deepcopy(self.model)
-                self.best_auroc = auroc
+                self.best_auroc = factual_auroc
                 self.best_epoch = self.current_epoch
-            print(' Validation at Epoch ' + str(self.current_epoch), "with AUROC "+ str(auroc) + " AUPRC " + str(auprc))
-        
-        #最终测试前 对beat_model 在验证集上做网格搜索lambda
+
+            print(
+                f" Validation at Epoch {self.current_epoch} "
+                f"with Factual AUROC {factual_auroc} AUPRC {factual_auprc}"
+            )
+
+        # 训练完成后，再在 best_model 上做 coarse-to-fine lambda 搜索
         self._select_best_lambdas()
 
         test_out = self.test(
@@ -107,12 +129,13 @@ class Trainer(object):
             lambda_drug=self.eval_lambda_drug,
             lambda_protein=self.eval_lambda_protein,
         )
-        
-        auroc, auprc, f1, sensitivity, specificity, accuracy, thred_optim = test_out[:7]        
-        test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [auroc, auprc, f1, sensitivity, specificity,
-                                                                            accuracy, thred_optim]))
+
+        auroc, auprc, f1, sensitivity, specificity, accuracy, thred_optim = test_out[:7]
+        test_lst = ["epoch " + str(self.best_epoch)] + list(map(float2str, [
+            auroc, auprc, f1, sensitivity, specificity, accuracy, thred_optim
+        ]))
         self.test_table.add_row(test_lst)
-        
+
         self.test_metrics.update({
             "auroc": auroc,
             "auprc": auprc,
@@ -123,23 +146,17 @@ class Trainer(object):
             "best_epoch": self.best_epoch,
             "F1": f1,
             "best_lambda_drug": self.eval_lambda_drug,
-            "best_lambda_protein": self.eval_lambda_protein,})
-        
-        #模型摘要输出--保留
-        print('Test at Best Model of Epoch ' + str(self.best_epoch) + " with AUROC "
-              + str(auroc) + " AUPRC " + str(auprc) + " Sensitivity " + str(sensitivity) + " Specificity " +
-              str(specificity) + " Accuracy " + str(accuracy) + " Thred_optim " + str(thred_optim))
-        self.test_metrics["auroc"] = auroc
-        self.test_metrics["auprc"] = auprc
-        self.test_metrics["sensitivity"] = sensitivity
-        self.test_metrics["specificity"] = specificity
-        self.test_metrics["accuracy"] = accuracy
-        self.test_metrics["thred_optim"] = thred_optim
-        self.test_metrics["best_epoch"] = self.best_epoch
-        self.test_metrics["F1"] = f1
-        
-        self.save_result()
+            "best_lambda_protein": self.eval_lambda_protein,
+        })
 
+        print(
+            'Test at Best Model of Epoch ' + str(self.best_epoch) + " with AUROC "
+            + str(auroc) + " AUPRC " + str(auprc) + " Sensitivity " + str(sensitivity)
+            + " Specificity " + str(specificity) + " Accuracy " + str(accuracy)
+            + " Thred_optim " + str(thred_optim)
+        )
+
+        self.save_result()
         return self.test_metrics, self.best_epoch
     
     def _build_search_values(self, start, end, step):
@@ -169,6 +186,7 @@ class Trainer(object):
         best_auroc = -1.0
         best_pair = (self.train_lambda_drug, self.train_lambda_protein)
         records = []
+
         for ld in lambda_drug_values:
             for lp in lambda_protein_values:
                 branch_metrics = self._eval_branch_metrics(ld, lp)
@@ -183,15 +201,18 @@ class Trainer(object):
                     "auprc": float(auprc) if not np.isnan(auprc) else float("nan"),
                 })
 
-                print(f"[{tag}] lambda_drug={ld:.2f}, lambda_protein={lp:.2f}, "
-                    f"val_auroc={auroc:.6f}, val_auprc={auprc:.6f}")
+                print(
+                    f"[{tag}] lambda_drug={ld:.2f}, lambda_protein={lp:.2f}, "
+                    f"val_auroc={auroc:.6f}, val_auprc={auprc:.6f}"
+                )
+
                 if np.isnan(auroc):
                     continue
                 if auroc > best_auroc:
                     best_auroc = auroc
                     best_pair = (float(ld), float(lp))
-        return best_pair, best_auroc, records
 
+        return best_pair, best_auroc, records
     def _search_single_grid(self, branch_name, candidate_values, fixed_other_lambda=0.0, tag="single"):
         best_auroc = -1.0
         best_lambda = None
@@ -232,6 +253,71 @@ class Trainer(object):
 
         return best_lambda, best_auroc, records
     #网格搜索
+    def _build_search_values(self, start, end, step):
+        vals = []
+        cur = float(start)
+        end = float(end)
+        step = float(step)
+        while cur <= end + 1e-8:
+            vals.append(round(cur, 10))
+            cur += step
+        return vals
+    
+    def _build_local_values(self, center, radius, global_min, global_max, step):
+        start = max(global_min, center - radius)
+        end = min(global_max, center + radius)
+        return self._build_search_values(start, end, step)
+
+
+    def _eval_branch_metrics(self, lambda_drug, lambda_protein):
+        return self.test(
+            dataloader="val",
+            model_ref=self.best_model,
+            lambda_drug=float(lambda_drug),
+            lambda_protein=float(lambda_protein),
+            return_branch_metrics=True,
+        )
+    
+    def _search_single_grid(self, branch_name, candidate_values, fixed_other_lambda=0.0, tag="single"):
+        best_auroc = -1.0
+        best_lambda = None
+        records = []
+
+        for val in candidate_values:
+            if branch_name == "drug_only":
+                branch_metrics = self._eval_branch_metrics(val, fixed_other_lambda)
+                metric_key = "debiased_drug_only"
+            elif branch_name == "protein_only":
+                branch_metrics = self._eval_branch_metrics(fixed_other_lambda, val)
+                metric_key = "debiased_protein_only"
+            else:
+                raise ValueError(f"Unsupported branch_name: {branch_name}")
+
+            auroc = branch_metrics["auroc"].get(metric_key, float("nan"))
+            auprc = branch_metrics["auprc"].get(metric_key, float("nan"))
+
+            records.append({
+                "tag": tag,
+                "branch": branch_name,
+                "lambda": float(val),
+                "auroc": float(auroc) if not np.isnan(auroc) else float("nan"),
+                "auprc": float(auprc) if not np.isnan(auprc) else float("nan"),
+            })
+
+            print(f"[{tag}-{branch_name}] lambda={val:.2f}, val_auroc={auroc:.6f}, val_auprc={auprc:.6f}")
+
+            if np.isnan(auroc):
+                continue
+            if auroc > best_auroc:
+                best_auroc = auroc
+                best_lambda = float(val)
+
+        if best_lambda is None:
+            best_lambda = 0.0
+
+        return best_lambda, best_auroc, records
+
+
     def _select_best_lambdas(self):
         if not self.enable_lambda_grid_search:
             return
@@ -288,7 +374,7 @@ class Trainer(object):
         self.eval_lambda_drug = best_pair_fine[0]
         self.eval_lambda_protein = best_pair_fine[1]
 
-        # 3) drug-only coarse + fine
+        # 3) drug-only
         best_drug_coarse, best_drug_auroc_coarse, drug_coarse_records = self._search_single_grid(
             branch_name="drug_only",
             candidate_values=coarse_ld_values,
@@ -314,7 +400,7 @@ class Trainer(object):
         all_records["drug_only_fine"] = drug_fine_records
         self.eval_lambda_drug_only = best_drug_fine
 
-        # 4) protein-only coarse + fine
+        # 4) protein-only
         best_protein_coarse, best_protein_auroc_coarse, protein_coarse_records = self._search_single_grid(
             branch_name="protein_only",
             candidate_values=coarse_lp_values,
@@ -352,17 +438,6 @@ class Trainer(object):
             f"protein_only(best_lambda_protein_only={self.eval_lambda_protein_only}, "
             f"val_auroc={best_protein_auroc_fine:.6f})"
         )
-
-        if (
-            abs(self.eval_lambda_drug - coarse_min) < 1e-8 or
-            abs(self.eval_lambda_drug - coarse_max) < 1e-8 or
-            abs(self.eval_lambda_protein - coarse_min) < 1e-8 or
-            abs(self.eval_lambda_protein - coarse_max) < 1e-8
-        ):
-            print(
-                "[Warning] joint best lambda is on the search boundary. "
-                "You may want to expand the coarse range."
-            )
     
     def save_result(self):
         if self.config.TRAIN.SAVE_MODEL:
@@ -392,63 +467,72 @@ class Trainer(object):
     def train_epoch(self):
         self.model.train()
         loss_epoch = 0
-        r=0
+        r = 0
         num_batches = len(self.train_dataloader)
+
         loop = tqdm(self.train_dataloader, colour='#ff4777', file=sys.stdout)
         loop.set_description(f'Train Epoch[{self.current_epoch}/{self.epochs}]')
+
         for step, batch in enumerate(loop):
             self.optim.zero_grad()
             self.step += 1
             r += 1
-            
-            input_drugs = {k:v.to(self.device) for k,v in batch['batch_inputs_drug'].items()}
-            #input_drugs = batch['batch_inputs_drug'].to(self.device)
+
+            input_drugs = {k: v.to(self.device) for k, v in batch['batch_inputs_drug'].items()}
             input_proteins = batch['batch_inputs_pr']['input_ids'].to(self.device)
             pr_mask = batch['batch_inputs_pr']['attention_mask'].to(self.device)
             labels = torch.tensor(batch['labels']).to(self.device)
             drug_labels = batch['masked_drug_labels']
-            
-            kwargs={
-                #'pr_mask': pr_mask, 不用重传--报错1
-                #训练阶段三个分支同时走 训练使用默认lamnda
+
+            kwargs = {
                 'lambda_drug': self.train_lambda_drug,
                 'lambda_protein': self.train_lambda_protein,
-                }
-            
-            
+            }
+
             if drug_labels is not None:
-                #inputs_drugs_m = batch['batch_inputs_drug_m'].to(self.device)
-                inputs_drugs_m = {k:v.to(self.device) for k,v in batch['batch_inputs_drug_m'].items()}
+                inputs_drugs_m = {k: v.to(self.device) for k, v in batch['batch_inputs_drug_m'].items()}
                 drug_labels = drug_labels.to(self.device)
-                
-                output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, masked_drugs=inputs_drugs_m,**kwargs)
-                
-                """b_loss = cross_entropy(output['logits'], labels)
-                mlm_loss = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'], drug_labels)
-                loss = b_loss + mlm_loss"""
-                
+                output = self.model(
+                    input_drugs,
+                    input_proteins,
+                    pr_mask=pr_mask,
+                    masked_drugs=inputs_drugs_m,
+                    **kwargs
+                )
             else:
                 output = self.model(input_drugs, input_proteins, pr_mask=pr_mask, **kwargs)
-                #loss = cross_entropy(output['logits'], labels)
 
-            
-
-            #损失规划
-            #factual 分支 CE (没有权重)
+            # ===== 新训练机制 loss =====
             factual_loss = cross_entropy(output['factual_logits'], labels)
-            #debiased 分支 CE (可学习权重)
-            debias_ce_weight = self.model.get_debias_ce_weight() 
-            debias_loss = cross_entropy(output['debiased_logits'], labels) 
-            
-            loss = factual_loss + debias_ce_weight * debias_loss    
+            cf_drug_loss = cross_entropy(output['cf_drug_logits'], labels)
+            cf_protein_loss = cross_entropy(output['cf_protein_logits'], labels)
+
+            loss = (
+                factual_loss
+                + self.cf_drug_loss_weight * cf_drug_loss
+                + self.cf_protein_loss_weight * cf_protein_loss
+            )
+
+            mlm_loss_value = None
             if drug_labels is not None and output['drug_mlm_logits'] is not None:
-                mlm_loss = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'], drug_labels)
-                loss = loss + mlm_loss
-            
+                mlm_loss_value = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'],drug_labels)
+                loss = loss + self.mlm_loss_weight * mlm_loss_value
+
             loss.backward()
             self.optim.step()
+
             loss_epoch += loss.item()
-            loop.set_postfix(avg_loss=loss_epoch / r,debias_w=float(debias_ce_weight.detach().cpu().numpy()))
+
+            postfix_dict = {
+                "avg_loss": loss_epoch / r,
+                "Lf": float(factual_loss.detach().cpu().item()),
+                "Lcf_d": float(cf_drug_loss.detach().cpu().item()),
+                "Lcf_t": float(cf_protein_loss.detach().cpu().item()),
+            }
+            if mlm_loss_value is not None:
+                postfix_dict["Lmlm"] = float(mlm_loss_value.detach().cpu().item())
+
+            loop.set_postfix(**postfix_dict)
 
         loss_epoch = loss_epoch / num_batches
         return loss_epoch
