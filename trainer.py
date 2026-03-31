@@ -64,7 +64,7 @@ class Trainer(object):
         #分支loss权重
         self.cf_drug_loss_weight = float(getattr(config.TRAIN,"CF_DRUG_LOSS_WEIGHT",0.3))
         self.cf_protein_loss_weight= float(getattr(config.TRAIN,"CF_PROTEIN_LOSS_WEIGHT",0.3))
-        self.mlm_loss_weight=float(getattr(config.TRAIN,"MLM_LOSS_WEIGHT",0.3))
+        #self.mlm_loss_weight=float(getattr(config.TRAIN,"MLM_LOSS_WEIGHT",0.3))
         
         #最佳epoch的选择依据：factual分支性能
         self.select_best_epoch_by=str(getattr(config.TRAIN,"SELECT_BEST_EPOCH_BY","factual")).lower()
@@ -105,7 +105,7 @@ class Trainer(object):
 
             factual_auroc = val_metrics["auroc"]["factual"]
             factual_auprc = val_metrics["auprc"]["factual"]
-
+              
             val_lst = ["epoch " + str(self.current_epoch)] + list(map(float2str, [factual_auroc, factual_auprc]))
             self.val_table.add_row(val_lst)
             self.val_auroc_epoch.append(factual_auroc)
@@ -213,6 +213,8 @@ class Trainer(object):
                     best_pair = (float(ld), float(lp))
 
         return best_pair, best_auroc, records
+    
+    
     def _search_single_grid(self, branch_name, candidate_values, fixed_other_lambda=0.0, tag="single"):
         best_auroc = -1.0
         best_lambda = None
@@ -252,6 +254,7 @@ class Trainer(object):
             best_lambda = self.train_lambda_drug if branch_name == "drug_only" else self.train_lambda_protein
 
         return best_lambda, best_auroc, records
+    
     #网格搜索
     def _build_search_values(self, start, end, step):
         vals = []
@@ -516,7 +519,8 @@ class Trainer(object):
             mlm_loss_value = None
             if drug_labels is not None and output['drug_mlm_logits'] is not None:
                 mlm_loss_value = nn.CrossEntropyLoss(ignore_index=-1)(output['drug_mlm_logits'],drug_labels)
-                loss = loss + self.mlm_loss_weight * mlm_loss_value
+                #loss = loss + self.mlm_loss_weight * mlm_loss_value
+                loss=loss  + mlm_loss_value
 
             loss.backward()
             self.optim.step()
